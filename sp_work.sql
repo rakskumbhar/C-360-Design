@@ -334,5 +334,5 @@ select* from P360_SP.TEST_DATA.PROVIDER_MASTER_RAW_2026_06_10;
 
 
 --delete threshold -- 1 record
-
+--ok
 
