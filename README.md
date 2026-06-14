@@ -404,7 +404,7 @@ All source tables must include a `_loaded_at TIMESTAMP_NTZ` column for increment
 ```sql
 -- Step 1: Deploy infrastructure (schemas, tables, procedures)
 -- Execute files in order from 00_CONFIG through 06_ORCHESTRATION
--- See docs/Snowflake_SETUP.md for detailed step-by-step instructions
+-- See Clinician-360-by-snowflake-sp/docs/Snowflake_SETUP.md for detailed step-by-step instructions
 
 -- Step 2: Seed configuration with defaults
 -- Execute: 00_CONFIG/003_seed_configuration.sql
@@ -494,16 +494,16 @@ SHOW TASKS IN SCHEMA P360_SP.ORCHESTRATION;
 
 ## Documentation
 
-Detailed documentation is available in the [`docs/`](docs/) folder:
+Detailed documentation is available in the [`docs/`](Clinician-360-by-snowflake-sp/docs/) folder:
 
 | Document | Description |
 |----------|-------------|
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture, schema layout, design philosophy, step execution flow, dbt comparison |
-| [CODE_WALKTHROUGH.md](docs/CODE_WALKTHROUGH.md) | Project structure, procedure patterns, key design decisions, data flow per source |
-| [INCREMENTAL_PROCESSING.md](docs/INCREMENTAL_PROCESSING.md) | HWM strategy, MERGE idempotency, SCD2 logic, edge cases, monitoring queries |
-| [OPERATIONS.md](docs/OPERATIONS.md) | Deployment, pipeline execution, monitoring views, configuration, scheduling, troubleshooting |
-| [Snowflake_SETUP.md](docs/Snowflake_SETUP.md) | Prerequisites, step-by-step setup, RBAC configuration, environment setup |
-| [TESTING_NEW_DATA.md](docs/TESTING_NEW_DATA.md) | Testing approach per layer, E2E pipeline tests, DQ threshold tests, resume tests |
+| [ARCHITECTURE.md](Clinician-360-by-snowflake-sp/docs/ARCHITECTURE.md) | System architecture, schema layout, design philosophy, step execution flow, dbt comparison |
+| [CODE_WALKTHROUGH.md](Clinician-360-by-snowflake-sp/docs/CODE_WALKTHROUGH.md) | Project structure, procedure patterns, key design decisions, data flow per source |
+| [INCREMENTAL_PROCESSING.md](Clinician-360-by-snowflake-sp/docs/INCREMENTAL_PROCESSING.md) | HWM strategy, MERGE idempotency, SCD2 logic, edge cases, monitoring queries |
+| [OPERATIONS.md](Clinician-360-by-snowflake-sp/docs/OPERATIONS.md) | Deployment, pipeline execution, monitoring views, configuration, scheduling, troubleshooting |
+| [Snowflake_SETUP.md](Clinician-360-by-snowflake-sp/docs/Snowflake_SETUP.md) | Prerequisites, step-by-step setup, RBAC configuration, environment setup |
+| [TESTING_NEW_DATA.md](Clinician-360-by-snowflake-sp/docs/TESTING_NEW_DATA.md) | Testing approach per layer, E2E pipeline tests, DQ threshold tests, resume tests |
 
 ---
 
