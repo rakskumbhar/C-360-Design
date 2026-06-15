@@ -38,7 +38,7 @@ BEGIN
     LANGUAGE SQL
     EXECUTE AS CALLER
     AS
-    '
+    $$
     DECLARE
         v_run_id VARCHAR;
         v_step_result VARIANT;
@@ -47,29 +47,31 @@ BEGIN
         v_max_retries NUMBER;
         v_retry_delay NUMBER;
         v_resume_from_step NUMBER DEFAULT 0;
-        v_overall_status VARCHAR DEFAULT ''COMPLETED'';
+        v_overall_status VARCHAR DEFAULT 'COMPLETED';
         v_failed_step VARCHAR;
         v_error_msg VARCHAR;
+        v_sqlcode NUMBER;
+        v_sqlstate VARCHAR;
         v_steps_completed NUMBER DEFAULT 0;
         v_steps_total NUMBER DEFAULT 0;
         v_retry_success BOOLEAN;
-        
-        cur_steps CURSOR FOR
-            SELECT step_id, step_name, step_layer, step_procedure, retry_count, retry_delay_seconds
-            FROM P360_SP.CONFIG.PKG_STEP_REGISTRY
-            WHERE is_active = TRUE
-              AND step_id >= :v_resume_from_step
-              AND (step_id = :P_STEP_ID OR :P_STEP_ID IS NULL)
-            ORDER BY step_order;
+        v_cur_step_id NUMBER;
+        v_cur_step_name VARCHAR;
+        v_cur_step_layer VARCHAR;
+        v_cur_step_procedure VARCHAR;
+        v_cur_retry_count NUMBER;
+        v_cur_retry_delay NUMBER;
     BEGIN
-        IF (:P_RUN_MODE = ''RESUME'' AND :P_RESUME_RUN_ID IS NOT NULL) THEN
+        v_resume_from_step := 0;
+
+        IF (:P_RUN_MODE = 'RESUME' AND :P_RESUME_RUN_ID IS NOT NULL) THEN
             v_run_id := :P_RESUME_RUN_ID;
             SELECT COALESCE(failed_step_id, 0) INTO v_resume_from_step
             FROM P360_SP.AUDIT.PKG_RUN_LOG
             WHERE run_id = :v_run_id;
             
             UPDATE P360_SP.AUDIT.PKG_RUN_LOG
-            SET run_status = ''RUNNING'',
+            SET run_status = 'RUNNING',
                 resume_from_step_id = :v_resume_from_step,
                 error_message = NULL
             WHERE run_id = :v_run_id;
@@ -78,7 +80,7 @@ BEGIN
             CALL P360_SP.CONFIG.SP_LOG_RUN_START(:v_run_id, :P_RUN_MODE, NULL);
         END IF;
 
-        CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, ''RUN_START'', NULL);
+        CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, 'RUN_START', NULL);
 
         SELECT COUNT(*) INTO v_steps_total
         FROM P360_SP.CONFIG.PKG_STEP_REGISTRY
@@ -86,93 +88,111 @@ BEGIN
           AND step_id >= :v_resume_from_step
           AND (step_id = :P_STEP_ID OR :P_STEP_ID IS NULL);
 
+        LET v_rs RESULTSET := (SELECT step_id, step_name, step_layer, step_procedure, retry_count, retry_delay_seconds
+                 FROM P360_SP.CONFIG.PKG_STEP_REGISTRY
+                 WHERE is_active = TRUE
+                   AND step_id >= :v_resume_from_step
+                   AND (step_id = :P_STEP_ID OR :P_STEP_ID IS NULL)
+                 ORDER BY step_order);
+        LET cur_steps CURSOR FOR v_rs;
+
         FOR rec IN cur_steps DO
+            v_cur_step_id := rec.step_id;
+            v_cur_step_name := rec.step_name;
+            v_cur_step_layer := rec.step_layer;
+            v_cur_step_procedure := rec.step_procedure;
+            v_cur_retry_count := rec.retry_count;
+            v_cur_retry_delay := rec.retry_delay_seconds;
             v_retry_attempt := 0;
-            v_max_retries := rec.retry_count;
-            v_retry_delay := rec.retry_delay_seconds;
+            v_max_retries := :v_cur_retry_count;
+            v_retry_delay := :v_cur_retry_delay;
             v_retry_success := FALSE;
 
-            WHILE (v_retry_attempt < v_max_retries AND v_retry_success = FALSE AND v_overall_status = ''COMPLETED'') DO
+            WHILE (v_retry_attempt < v_max_retries AND v_retry_success = FALSE AND v_overall_status = 'COMPLETED') DO
                 v_retry_attempt := v_retry_attempt + 1;
                 
                 BEGIN
-                    EXECUTE IMMEDIATE ''CALL '' || rec.step_procedure || ''('''''''''' || v_run_id || '''''''''', '''''''''' || P_RUN_MODE || '''''''''')'';
+                    LET v_call_sql VARCHAR := 'CALL ' || :v_cur_step_procedure || '(''' || :v_run_id || ''', ''' || :P_RUN_MODE || ''')';
+                    EXECUTE IMMEDIATE :v_call_sql;
                     
                     v_step_result := (SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
                     v_step_status := v_step_result:status::VARCHAR;
                     
-                    IF (v_step_status = ''COMPLETED'' OR v_step_status = ''SKIPPED'') THEN
+                    IF (v_step_status = 'COMPLETED' OR v_step_status = 'SKIPPED') THEN
                         v_steps_completed := v_steps_completed + 1;
                         v_retry_success := TRUE;
-                    ELSEIF (v_step_status = ''FAILED'') THEN
+                    ELSEIF (v_step_status = 'FAILED') THEN
                         IF (v_retry_attempt >= v_max_retries) THEN
-                            v_overall_status := ''FAILED'';
-                            v_failed_step := rec.step_name;
-                            v_error_msg := COALESCE(v_step_result:error::VARCHAR, v_step_result:reason::VARCHAR, ''Unknown error'');
+                            v_overall_status := 'FAILED';
+                            v_failed_step := :v_cur_step_name;
+                            v_error_msg := COALESCE(v_step_result:error::VARCHAR, v_step_result:reason::VARCHAR, 'Unknown error');
                             
                             UPDATE P360_SP.AUDIT.PKG_RUN_LOG
-                            SET failed_step_id = rec.step_id
+                            SET failed_step_id = :v_cur_step_id
                             WHERE run_id = :v_run_id;
                             
-                            CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, ''STEP_FAILURE'', NULL);
+                            CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, 'STEP_FAILURE', NULL);
                         ELSE
-                            CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, ''STEP_FAILURE'', NULL);
-                            CALL SYSTEM$WAIT(:v_retry_delay, ''SECONDS'');
+                            CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, 'STEP_FAILURE', NULL);
+                            CALL SYSTEM$WAIT(:v_retry_delay, 'SECONDS');
                         END IF;
                     END IF;
                 EXCEPTION
                     WHEN OTHER THEN
+                        v_error_msg := SQLERRM;
+                        v_sqlcode := SQLCODE;
+                        v_sqlstate := SQLSTATE;
                         IF (v_retry_attempt >= v_max_retries) THEN
-                            v_overall_status := ''FAILED'';
-                            v_failed_step := rec.step_name;
-                            v_error_msg := SQLERRM;
+                            v_overall_status := 'FAILED';
+                            v_failed_step := :v_cur_step_name;
                             
                             UPDATE P360_SP.AUDIT.PKG_RUN_LOG
-                            SET failed_step_id = rec.step_id
+                            SET failed_step_id = :v_cur_step_id
                             WHERE run_id = :v_run_id;
                             
-                            CALL P360_SP.CONFIG.SP_LOG_ERROR(:v_run_id, NULL, rec.step_name, SQLCODE, SQLSTATE, SQLERRM, rec.step_procedure, ''ERROR'');
+                            CALL P360_SP.CONFIG.SP_LOG_ERROR(:v_run_id, NULL, :v_cur_step_name, :v_sqlcode, :v_sqlstate, :v_error_msg, :v_cur_step_procedure, 'ERROR');
                         ELSE
-                            CALL SYSTEM$WAIT(:v_retry_delay, ''SECONDS'');
+                            CALL SYSTEM$WAIT(:v_retry_delay, 'SECONDS');
                         END IF;
                 END;
             END WHILE;
 
-            IF (v_overall_status = ''FAILED'') THEN
+            IF (v_overall_status = 'FAILED') THEN
                 CALL P360_SP.CONFIG.SP_LOG_RUN_END(:v_run_id, :v_overall_status, :v_error_msg);
-                CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, ''RUN_FAILURE'', NULL);
+                CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, 'RUN_FAILURE', NULL);
                 RETURN OBJECT_CONSTRUCT(
-                    ''run_id'', :v_run_id,
-                    ''status'', ''FAILED'',
-                    ''mode'', :P_RUN_MODE,
-                    ''steps_completed'', :v_steps_completed,
-                    ''steps_total'', :v_steps_total,
-                    ''failed_step'', :v_failed_step,
-                    ''error'', :v_error_msg,
-                    ''resume_command'', ''CALL P360_SP.ORCHESTRATION.SP_RUN_PACKAGE(''''RESUME'''', '''''' || v_run_id || '''''')''
+                    'run_id', :v_run_id,
+                    'status', 'FAILED',
+                    'mode', :P_RUN_MODE,
+                    'steps_completed', :v_steps_completed,
+                    'steps_total', :v_steps_total,
+                    'failed_step', :v_failed_step,
+                    'error', :v_error_msg,
+                    'resume_command', 'CALL P360_SP.ORCHESTRATION.SP_RUN_PACKAGE(''RESUME'', ''' || v_run_id || ''')'
                 );
             END IF;
         END FOR;
 
         CALL P360_SP.CONFIG.SP_LOG_RUN_END(:v_run_id, :v_overall_status, :v_error_msg);
-        CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, ''RUN_COMPLETE'', NULL);
+        CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, 'RUN_COMPLETE', NULL);
 
         RETURN OBJECT_CONSTRUCT(
-            ''run_id'', :v_run_id,
-            ''status'', :v_overall_status,
-            ''mode'', :P_RUN_MODE,
-            ''steps_completed'', :v_steps_completed,
-            ''steps_total'', :v_steps_total,
-            ''failed_step'', NULL,
-            ''error'', NULL,
-            ''resume_command'', NULL
+            'run_id', :v_run_id,
+            'status', :v_overall_status,
+            'mode', :P_RUN_MODE,
+            'steps_completed', :v_steps_completed,
+            'steps_total', :v_steps_total,
+            'failed_step', NULL,
+            'error', NULL,
+            'resume_command', NULL
         );
 
     EXCEPTION
         WHEN OTHER THEN
-            CALL P360_SP.CONFIG.SP_LOG_RUN_END(:v_run_id, ''FAILED'', SQLERRM);
-            CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, ''RUN_FAILURE'', NULL);
-            RETURN OBJECT_CONSTRUCT(''run_id'', :v_run_id, ''status'', ''FAILED'', ''error'', SQLERRM);
+            v_error_msg := SQLERRM;
+            CALL P360_SP.CONFIG.SP_LOG_RUN_END(:v_run_id, 'FAILED', :v_error_msg);
+            CALL P360_SP.CONFIG.SP_SEND_NOTIFICATION(:v_run_id, 'RUN_FAILURE', NULL);
+            RETURN OBJECT_CONSTRUCT('run_id', :v_run_id, 'status', 'FAILED', 'error', :v_error_msg);
     END;
-    ';
+    $$;
 END;

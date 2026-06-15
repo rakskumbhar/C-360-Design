@@ -49,6 +49,88 @@ select* from P360_SP.RAW_INGESTION.PROVIDER_MASTER_RAW;
 
 
 
+select* from P360_SP.RAW_INGESTION.NPI_RAW
+where npi_number='1234567890';
+select* from P360_SP.RAW_INGESTION.PROVIDER_MASTER_RAW
+where npi_number='1234567890';
+
+;
+
+update  P360_SP.TEST_DATA.PROVIDER_MASTER_RAW_2026_06_10
+set updated_at='2026-01-09 14:30:00.000'
+where npi_number='1234567890'
+
+;
+
+select* from P360_SP.RAW_INGESTION.PROVIDER_MASTER_RAW
+where npi_number='1234567890'
+;
+insert into P360_SP.RAW_INGESTION.NPI_RAW
+select* from  P360_SP.TEST_DATA.NPI_RAW_2026_06_10
+where npi_number='1234567890';
+
+
+insert into P360_SP.RAW_INGESTION.PROVIDER_MASTER_RAW
+select* from  P360_SP.TEST_DATA.PROVIDER_MASTER_RAW_2026_06_10
+where npi_number='1234567890'
+
+;
+select* from P360_SP.RAW_INGESTION.NPI_RAW
+where npi_number='1234567890'
+;
+
+describe table P360_SP.RAW_INGESTION.NPI_RAW
+;
+
+insert into P360_SP.TEST_DATA.NPI_RAW_2026_06_10
+select 
+NPI_NUMBER
+,PROVIDER_FIRST_NAME
+,PROVIDER_LAST_NAME_LEGAL
+,'PO' asPROVIDER_CREDENTIAL_TEXT
+,PROVIDER_GENDER_CODE
+,ENTITY_TYPE_CODE
+,SOLE_PROPRIETOR
+,ENUMERATION_DATE
+,LAST_UPDATE_DATE
+,NPI_DEACTIVATION_DATE
+,NPI_REACTIVATION_DATE
+,STATUS
+,'2026-06-10 00:00:00.000' as _LOADED_AT
+from P360_SP.RAW_INGESTION.NPI_RAW
+where npi_number='1234567890'
+;
+describe table P360_SP.RAW_INGESTION.PROVIDER_MASTER_RAW;
+
+select* from p360_sp.test_data.PROVIDER_MASTER_RAW_2026_06_10;
+
+select* from p360_sp.test_data.NPI_RAW_2026_06_10;
+
+
+insert into P360_SP.TEST_DATA.PROVIDER_MASTER_RAW_2026_06_10
+
+select 
+
+PROVIDER_ID
+,NPI_NUMBER
+,FACILITY_NAME
+,ADDRESS_LINE_1
+,ADDRESS_LINE_2
+,'Miami' as CITY
+,'FL' as STATE_CODE
+,'33311' as ZIP_CODE
+,PHONE_NUMBER
+,ACCEPTING_NEW_PATIENTS
+,PROVIDER_STATUS
+,UPDATED_AT
+,'2026-06-10 00:00:00.000' as _LOADED_AT
+
+from P360_SP.RAW_INGESTION.PROVIDER_MASTER_RAW
+where npi_number='1234567890'
+;
+
+;
+
 -- Data operations
 select* from P360_SP.RAW_INGESTION.CLAIMS_RAW
 where _loaded_at::date='2024-01-15'
@@ -203,7 +285,97 @@ delete from P360_SP.RAW_INGESTION.PROVIDER_MASTER_RAW
 where _loaded_at::date='2026-06-10'
 ;
 
-select* from TEST_DATA.PROVIDER_MASTER_RAW_2026_06_10;
+
+
+
+
+update P360_SP.RAW_INGESTION.CLAIMS_RAW
+set _loaded_at='2026-06-01'
+where _loaded_at::date='2026-01-01'
+;
+
+
+--select* from TEST_DATA.CLAIMS_RAW_2026_06_10;
+create table TEST_DATA.CLAIMS_RAW_2026_06_01 as
+
+select* from P360_SP.RAW_INGESTION.CLAIMS_RAW
+where _loaded_at::date='2026-06-01'
+;
+
+
+
+update P360_SP.RAW_INGESTION.NETWORK_AFFILIATIONS_RAW
+set _loaded_at='2026-06-01'
+where _loaded_at::date='2026-01-01'
+;
+
+create table TEST_DATA.NETWORK_AFFILIATIONS_RAW_2026_06_01 as
+select* from P360_SP.RAW_INGESTION.NETWORK_AFFILIATIONS_RAW
+where _loaded_at::date='2026-06-01'
+;
+
+
+
+
+update P360_SP.RAW_INGESTION.NPI_RAW
+set _loaded_at='2026-06-01'
+where _loaded_at::date='2026-01-01'
+;
+
+create table TEST_DATA.NPI_RAW_2026_06_01 as
+select* from P360_SP.RAW_INGESTION.NPI_RAW
+where _loaded_at::date='2026-06-01'
+;
+
+
+update P360_SP.RAW_INGESTION.PROVIDER_CREDENTIALS_RAW
+set _loaded_at='2026-06-01'
+where _loaded_at::date='2026-01-01'
+;
+
+create table TEST_DATA.PROVIDER_CREDENTIALS_RAW_2026_06_01 as
+select* from P360_SP.RAW_INGESTION.PROVIDER_CREDENTIALS_RAW
+where _loaded_at::date='2026-06-01'
+;
+
+
+
+update P360_SP.RAW_INGESTION.PROVIDER_MASTER_RAW
+set _loaded_at='2026-06-01'
+where _loaded_at::date='2026-01-01'
+;
+
+create table TEST_DATA.PROVIDER_MASTER_RAW_2026_06_01 as
+select* from P360_SP.RAW_INGESTION.PROVIDER_MASTER_RAW
+where _loaded_at::date='2026-06-01'
+;
+
+
+
+
+
+
+
+
+select table_name from information_schema.tables
+ where table_schema='TEST_DATA'
+ order by table_name
+limit 100
+
+;
+
+select* from p360_sp.test_data.CLAIMS_RAW_2026_06_01;
+select* from p360_sp.test_data.CLAIMS_RAW_2026_06_10;
+select* from p360_sp.test_data.NETWORK_AFFILIATIONS_RAW_2026_06_01;
+select* from p360_sp.test_data.NETWORK_AFFILIATIONS_RAW_2026_06_10;
+select* from p360_sp.test_data.NPI_RAW_2026_06_01;
+select* from p360_sp.test_data.NPI_RAW_2026_06_10;
+select* from p360_sp.test_data.PROVIDER_CREDENTIALS_RAW_2026_06_01;
+select* from p360_sp.test_data.PROVIDER_CREDENTIALS_RAW_2026_06_10;
+select* from p360_sp.test_data.PROVIDER_MASTER_RAW_2026_06_01;
+select* from p360_sp.test_data.PROVIDER_MASTER_RAW_2026_06_10;
+
+
 
 ;
 
@@ -255,15 +427,13 @@ truncate table P360_SP.GOLD.PROVIDER_360_SUMMARY;
 
 
 
-
-
-
-
+--Check active stored procedures execution sequestion  
     SELECT step_id, step_name, step_layer, step_procedure, retry_count, retry_delay_seconds
         FROM P360_SP.CONFIG.PKG_STEP_REGISTRY
         WHERE is_active = TRUE;
 
-select*   FROM P360_SP.CONFIG.PKG_STEP_REGISTRY;
+select*   FROM P360_SP.CONFIG.PKG_STEP_REGISTRY
+order by step_order;
 
 --select audit log
 select* from  P360_SP.AUDIT.PKG_RUN_LOG;
@@ -335,4 +505,12 @@ select* from P360_SP.TEST_DATA.PROVIDER_MASTER_RAW_2026_06_10;
 
 --delete threshold -- 1 record
 --ok
+
+
+
+
+
+
+
+
 
