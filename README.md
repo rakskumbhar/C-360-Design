@@ -16,6 +16,7 @@
 - [Architecture](#architecture)
 - [Data Flow](#data-flow)
 - [Project Structure](#project-structure)
+- [Orchestration Workflow — SP_RUN_PACKAGE](#orchestration-workflow--sp_run_package)
 - [Pipeline Execution](#pipeline-execution)
 - [Data Quality Engine](#data-quality-engine)
 - [Incremental Processing](#incremental-processing)
@@ -218,6 +219,270 @@ Clinician-360-by-snowflake-sp/
 │   └── TESTING_NEW_DATA.md
 └── README.md                                  # This file
 ```
+
+---
+
+## Orchestration Workflow — SP_RUN_PACKAGE
+
+### Workflow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                         SP_RUN_PACKAGE(P_RUN_MODE, P_RESUME_RUN_ID, P_STEP_ID)          │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+                                             │
+                                             ▼
+                              ┌──────────────────────────────┐
+                              │  Determine Run Mode          │
+                              │  (FULL/INCREMENTAL/RESUME/   │
+                              │   RERUN_STEP)                │
+                              └──────────────┬───────────────┘
+                                             │
+                          ┌──────────────────┴──────────────────┐
+                          │                                     │
+                          ▼                                     ▼
+               ┌─────────────────────┐             ┌─────────────────────────┐
+               │  RESUME Mode        │             │  NEW RUN                │
+               │  ─────────────────  │             │  ─────────────────────  │
+               │  Reuse run_id from  │             │  Generate new UUID      │
+               │  P_RESUME_RUN_ID    │             │  run_id                 │
+               │                     │             │                         │
+               │  Lookup failed_step │             │  CALL SP_LOG_RUN_START  │
+               │  from PKG_RUN_LOG   │             │  (run_id, mode)         │
+               │                     │             │                         │
+               │  Set resume_from_   │             │  resume_from_step = 0   │
+               │  step = failed_step │             │                         │
+               │                     │             │                         │
+               │  Update run_status  │             │                         │
+               │  → RUNNING          │             │                         │
+               └────────┬────────────┘             └────────────┬────────────┘
+                        │                                       │
+                        └───────────────┬───────────────────────┘
+                                        │
+                                        ▼
+                         ┌──────────────────────────────┐
+                         │  SEND NOTIFICATION            │
+                         │  Event: RUN_START             │
+                         └──────────────┬───────────────┘
+                                        │
+                                        ▼
+                         ┌──────────────────────────────┐
+                         │  Load Step Registry           │
+                         │  ─────────────────────────── │
+                         │  FROM: PKG_STEP_REGISTRY     │
+                         │  WHERE: is_active = TRUE      │
+                         │    AND step_id >=             │
+                         │        resume_from_step       │
+                         │    AND (step_id = P_STEP_ID  │
+                         │         OR P_STEP_ID IS NULL)│
+                         │  ORDER BY: step_order         │
+                         └──────────────┬───────────────┘
+                                        │
+                                        ▼
+              ┌─────────────────────────────────────────────────────┐
+              │              FOR EACH STEP (Cursor Loop)             │
+              │  ┌───────────────────────────────────────────────┐  │
+              │  │ step_id, step_name, step_layer,               │  │
+              │  │ step_procedure, retry_count, retry_delay      │  │
+              │  └───────────────────────────────────────────────┘  │
+              └────────────────────────┬────────────────────────────┘
+                                       │
+                                       ▼
+                        ┌─────────────────────────────┐
+                        │  Initialize Retry State      │
+                        │  retry_attempt = 0           │
+                        │  max_retries = retry_count   │
+                        │  retry_success = FALSE       │
+                        └──────────────┬──────────────┘
+                                       │
+                                       ▼
+         ┌────────────────────────────────────────────────────────────────┐
+         │     WHILE (attempt < max_retries                               │
+         │            AND retry_success = FALSE                            │
+         │            AND overall_status = 'COMPLETED')                    │
+         │                                                                │
+         │         ┌──────────────────────────────────┐                   │
+         │         │  retry_attempt += 1               │                   │
+         │         │                                   │                   │
+         │         │  EXECUTE IMMEDIATE:               │                   │
+         │         │  CALL <step_procedure>            │                   │
+         │         │    (run_id, run_mode)             │                   │
+         │         └──────────────┬───────────────────┘                   │
+         │                        │                                       │
+         │                        ▼                                       │
+         │         ┌──────────────────────────────────┐                   │
+         │         │  Parse step_result VARIANT        │                   │
+         │         │  via RESULT_SCAN(LAST_QUERY_ID)   │                   │
+         │         └──────────────┬───────────────────┘                   │
+         │                        │                                       │
+         │           ┌────────────┼────────────┐                          │
+         │           │            │            │                           │
+         │           ▼            ▼            ▼                           │
+         │  ┌──────────────┐ ┌────────┐ ┌──────────────────────────┐     │
+         │  │  COMPLETED   │ │SKIPPED │ │       FAILED             │     │
+         │  │  or SKIPPED  │ │        │ │                          │     │
+         │  │              │ │        │ │  attempt >= max_retries?  │     │
+         │  │steps_completed│ │        │ │         │          │     │     │
+         │  │  += 1        │ │        │ │    YES  │     NO   │     │     │
+         │  │              │ │        │ │         ▼          ▼     │     │
+         │  │retry_success │ │        │ │  ┌───────────┐ ┌──────┐ │     │
+         │  │  = TRUE      │ │        │ │  │MARK FAILED│ │NOTIFY│ │     │
+         │  └──────────────┘ └────────┘ │  │           │ │STEP  │ │     │
+         │                              │  │overall_   │ │FAIL  │ │     │
+         │                              │  │status =   │ │      │ │     │
+         │                              │  │'FAILED'   │ │WAIT  │ │     │
+         │                              │  │           │ │(delay)│ │     │
+         │                              │  │Update     │ │      │ │     │
+         │                              │  │PKG_RUN_LOG│ │RETRY │ │     │
+         │                              │  │failed_step│ │      │ │     │
+         │                              │  │           │ └──────┘ │     │
+         │                              │  │NOTIFY     │          │     │
+         │                              │  │STEP_FAIL  │          │     │
+         │                              │  └───────────┘          │     │
+         │                              └──────────────────────────┘     │
+         │                                                                │
+         │    ┌───────────────────────────────────────────────────┐      │
+         │    │  EXCEPTION HANDLER (WHEN OTHER)                    │      │
+         │    │  ─────────────────────────────────────────────────│      │
+         │    │  Capture: SQLERRM, SQLCODE, SQLSTATE              │      │
+         │    │                                                    │      │
+         │    │  attempt >= max_retries?                           │      │
+         │    │     YES → overall_status = 'FAILED'               │      │
+         │    │            Update PKG_RUN_LOG (failed_step_id)     │      │
+         │    │            CALL SP_LOG_ERROR(...)                  │      │
+         │    │     NO  → WAIT(retry_delay) → next attempt        │      │
+         │    └───────────────────────────────────────────────────┘      │
+         └────────────────────────────────────────────────────────────────┘
+                                       │
+                                       ▼
+                        ┌─────────────────────────────┐
+                        │  overall_status = 'FAILED'?  │
+                        └──────────────┬──────────────┘
+                              │                │
+                         YES  │                │  NO (continue loop)
+                              ▼                │
+              ┌───────────────────────────┐    │
+              │  EARLY EXIT (FAILED)       │    │
+              │  ─────────────────────     │    │
+              │  CALL SP_LOG_RUN_END       │    │
+              │    (run_id, 'FAILED')      │    │
+              │                            │    │
+              │  SEND NOTIFICATION         │    │
+              │    Event: RUN_FAILURE      │    │
+              │                            │    │
+              │  RETURN {                  │    │
+              │    run_id, status: FAILED, │    │
+              │    mode, steps_completed,  │    │
+              │    steps_total,            │    │
+              │    failed_step,            │    │
+              │    error,                  │    │
+              │    resume_command          │    │
+              │  }                         │    │
+              └───────────────────────────┘    │
+                                               │
+                              ┌─────────────────┘
+                              │  (All steps completed successfully)
+                              ▼
+               ┌──────────────────────────────┐
+               │  SUCCESS EXIT                 │
+               │  ─────────────────────────── │
+               │  CALL SP_LOG_RUN_END          │
+               │    (run_id, 'COMPLETED')      │
+               │                               │
+               │  SEND NOTIFICATION            │
+               │    Event: RUN_COMPLETE         │
+               │                               │
+               │  RETURN {                     │
+               │    run_id, status: COMPLETED, │
+               │    mode, steps_completed,     │
+               │    steps_total,               │
+               │    failed_step: NULL,         │
+               │    error: NULL,               │
+               │    resume_command: NULL        │
+               │  }                            │
+               └──────────────────────────────┘
+
+         ┌────────────────────────────────────────────────────────────────┐
+         │  GLOBAL EXCEPTION HANDLER                                      │
+         │  ──────────────────────────────────────────────────────────── │
+         │  Catches any unhandled error at procedure level                │
+         │  → CALL SP_LOG_RUN_END(run_id, 'FAILED', error_msg)           │
+         │  → SEND NOTIFICATION: RUN_FAILURE                              │
+         │  → RETURN { run_id, status: FAILED, error }                   │
+         └────────────────────────────────────────────────────────────────┘
+```
+
+### Retry Logic — Exponential Backoff
+
+```
+  Attempt 1        Attempt 2        Attempt 3 (max)
+ ─────────────    ─────────────    ─────────────────
+ │ Execute SP │──▶│ WAIT delay │──▶│ Execute SP │──▶ FAIL (exhausted)
+ │            │   │ (seconds)  │   │            │
+ │ FAILED     │   │ Execute SP │   │ FAILED     │
+ └────────────┘   │            │   └────────────┘
+                  │ FAILED     │
+                  └────────────┘
+
+ - retry_count and retry_delay_seconds are configured per step in PKG_STEP_REGISTRY
+ - On transient exceptions, procedure waits before next attempt via SYSTEM$WAIT
+ - On final failure, the step is marked and pipeline halts for RESUME capability
+```
+
+### Resume-from-Failure Flow
+
+```
+   Original Run (FAILED at Step 10)          Resume Run
+  ─────────────────────────────────         ────────────────────────────────
+  Step 1  ✓ COMPLETED                       (skipped — step_id < 10)
+  Step 2  ✓ COMPLETED                       (skipped — step_id < 10)
+  Step 5  ✓ COMPLETED                       (skipped — step_id < 10)
+  Step 10 ✗ FAILED   ◀── failed_step_id     Step 10 ▶ RE-EXECUTE
+  Step 11   (not reached)                   Step 11 ▶ EXECUTE
+  Step 20   (not reached)                   Step 20 ▶ EXECUTE
+                                            ...
+  PKG_RUN_LOG stores:                       Uses same run_id from original
+  - run_id                                  CALL SP_RUN_PACKAGE('RESUME', '<run_id>')
+  - failed_step_id = 10
+```
+
+### Workflow Description
+
+The `SP_RUN_PACKAGE` stored procedure is the master orchestrator for the entire Provider 360 pipeline. It coordinates the execution of all child procedures across the Bronze, Silver, Gold, and Audit layers.
+
+**Initialization Phase:**
+1. Determines the run mode (FULL, INCREMENTAL, RESUME, or RERUN_STEP)
+2. For RESUME: retrieves the failed step from the prior run and sets the cursor starting point
+3. For new runs: generates a UUID-based `run_id` and logs the start in `PKG_RUN_LOG`
+4. Sends a `RUN_START` notification
+
+**Step Execution Phase:**
+1. Loads all active steps from `PKG_STEP_REGISTRY` (filtered by resume point and optional step ID)
+2. Iterates through each step in dependency order (`step_order`)
+3. Dynamically constructs and executes each child procedure call using `EXECUTE IMMEDIATE`
+4. Parses the VARIANT result from each child procedure to determine success/failure
+
+**Retry and Error Handling:**
+1. Each step has a configurable `retry_count` and `retry_delay_seconds`
+2. On failure or exception, the orchestrator waits and retries up to `max_retries`
+3. Exceptions are caught, logged via `SP_LOG_ERROR`, and the error context (SQLCODE, SQLSTATE, SQLERRM) is preserved
+4. On final retry exhaustion, the `failed_step_id` is recorded in `PKG_RUN_LOG` for resume capability
+
+**Completion Phase:**
+1. On success: logs run end as COMPLETED, sends `RUN_COMPLETE` notification
+2. On failure: logs run end as FAILED, sends `RUN_FAILURE` notification, returns a `resume_command` for easy recovery
+3. Returns a structured VARIANT with run statistics (steps completed, total, error details)
+
+**Key Supporting Objects:**
+
+| Object | Schema | Purpose |
+|--------|--------|---------|
+| `PKG_STEP_REGISTRY` | CONFIG | Defines steps, order, procedure names, retry settings |
+| `PKG_RUN_LOG` | AUDIT | Tracks run lifecycle (start, end, status, failed step) |
+| `SP_LOG_RUN_START` | CONFIG | Logs run initialization |
+| `SP_LOG_RUN_END` | CONFIG | Logs run completion/failure |
+| `SP_LOG_ERROR` | CONFIG | Captures exception details |
+| `SP_SEND_NOTIFICATION` | CONFIG | Dispatches email/webhook notifications |
 
 ---
 

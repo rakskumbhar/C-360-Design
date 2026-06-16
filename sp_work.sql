@@ -507,10 +507,24 @@ select* from P360_SP.TEST_DATA.PROVIDER_MASTER_RAW_2026_06_10;
 --ok
 
 
+;
+
+SELECT 
+  LOWER(HEX_ENCODE(SHA2(CONCAT('CUST-9902', '|', 'user@example.com'), 256))) AS sha256_hex_string,
+  TO_BINARY(SUBSTR(sha256_hex_string, 1, 32), 'HEX') AS binary_surrogate_key;
+
+
+
+;
+
+select* from SNOWFLAKE.CORE.NULL_COUNT(<query>)
+;
 
 
 
 
+select SNOWFLAKE.CORE.NULL_COUNT(select * from P360_SP.RAW_INGESTION.NPI_RAW);
 
 
-
+select * from P360_SP.RAW_INGESTION.NPI_RAW
+limit 100
