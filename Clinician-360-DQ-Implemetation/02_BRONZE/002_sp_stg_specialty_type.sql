@@ -1,5 +1,4 @@
 -- Stages Specialty Type data from RAW to Bronze with no inline reject filtering
--- Co-authored with CoCo
 /*=============================================================================
   02_BRONZE/002_sp_stg_specialty_type.sql
 =============================================================================*/

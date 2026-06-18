@@ -1,5 +1,4 @@
 -- Aggregates DQ failures into reject summaries and logs final metrics
--- Co-authored with CoCo
 USE DATABASE P360_DQ;
 USE SCHEMA AUDIT;
 

@@ -1,5 +1,4 @@
 -- Creates target tables for RAW, Bronze, Silver, Gold layers with test data
--- Co-authored with CoCo
 /*=============================================================================
   CLINICIAN-360-DQ-IMPLEMENTATION
   01_FRAMEWORK/003_target_tables.sql

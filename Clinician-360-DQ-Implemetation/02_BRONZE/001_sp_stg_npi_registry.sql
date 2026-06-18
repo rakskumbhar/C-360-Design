@@ -1,5 +1,4 @@
 -- Stages NPI registry data from RAW to Bronze with no inline reject filtering
--- Co-authored with CoCo
 /*=============================================================================
   CLINICIAN-360-DQ-IMPLEMENTATION
   02_BRONZE/001_sp_stg_npi_registry.sql

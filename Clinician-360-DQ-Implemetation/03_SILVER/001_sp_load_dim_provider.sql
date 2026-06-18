@@ -1,5 +1,4 @@
 -- Loads unified provider dimension from Bronze PASS/PASS-SOFT records into Silver
--- Co-authored with CoCo
 /*=============================================================================
   03_SILVER/001_sp_load_dim_provider.sql
 =============================================================================*/

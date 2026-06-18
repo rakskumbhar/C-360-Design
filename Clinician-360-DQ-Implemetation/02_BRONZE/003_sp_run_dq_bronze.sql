@@ -1,5 +1,4 @@
 -- DQ check wrapper for all Bronze layer tables using the generic DQ engine
--- Co-authored with CoCo
 /*=============================================================================
   02_BRONZE/003_sp_run_dq_bronze.sql
 =============================================================================*/

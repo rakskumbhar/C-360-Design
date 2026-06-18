@@ -1,5 +1,4 @@
 -- Core generic DQ engine procedure that evaluates rules from DQ_FEED config
--- Co-authored with CoCo
 /*=============================================================================
   CLINICIAN-360-DQ-IMPLEMENTATION
   01_FRAMEWORK/004_dq_engine_procedure.sql

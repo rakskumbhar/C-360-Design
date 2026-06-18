@@ -1,5 +1,4 @@
 -- Seeds all configuration data for DQ categories, rules, feeds, emails, and pipeline settings
--- Co-authored with CoCo
 /*=============================================================================
   CLINICIAN-360-DQ-IMPLEMENTATION
   00_CONFIG/003_seed_configuration.sql

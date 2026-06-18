@@ -1,5 +1,4 @@
 -- DQ check wrapper for Silver layer tables and SCD2 procedure
--- Co-authored with CoCo
 /*=============================================================================
   03_SILVER/002_sp_run_dq_silver.sql
 =============================================================================*/

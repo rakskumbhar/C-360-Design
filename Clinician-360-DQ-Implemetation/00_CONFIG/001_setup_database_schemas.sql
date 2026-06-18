@@ -1,5 +1,4 @@
 -- Creates P360_DQ database and all schemas for the Clinician-360 DQ framework
--- Co-authored with CoCo
 /*=============================================================================
   CLINICIAN-360-DQ-IMPLEMENTATION
   00_CONFIG/001_setup_database_schemas.sql

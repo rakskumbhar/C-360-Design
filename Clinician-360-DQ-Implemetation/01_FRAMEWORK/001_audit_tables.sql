@@ -1,5 +1,4 @@
 -- Creates audit, DQ logging, reject, and observability tables for the DQ framework
--- Co-authored with CoCo
 /*=============================================================================
   CLINICIAN-360-DQ-IMPLEMENTATION
   01_FRAMEWORK/001_audit_tables.sql

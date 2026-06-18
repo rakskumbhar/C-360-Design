@@ -1,5 +1,4 @@
 -- Builds Gold fact table from SCD2 snapshot filtering only PASS/PASS-SOFT records
--- Co-authored with CoCo
 USE DATABASE P360_DQ;
 USE SCHEMA GOLD;
 

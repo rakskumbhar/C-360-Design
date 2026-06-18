@@ -1,5 +1,4 @@
 -- Master orchestrator with dependency execution, DQ gates, and resume capability
--- Co-authored with CoCo
 USE DATABASE P360_DQ;
 USE SCHEMA ORCHESTRATION;
 

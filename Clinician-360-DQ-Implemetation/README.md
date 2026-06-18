@@ -1,6 +1,4 @@
 # Clinician-360 Data Quality Framework - Comprehensive Design Document
-*Co-authored with CoCo*
-
 ---
 
 ## 1. Executive Overview

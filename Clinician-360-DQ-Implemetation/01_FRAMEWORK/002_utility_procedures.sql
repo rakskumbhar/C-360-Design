@@ -1,5 +1,4 @@
 -- Utility stored procedures for logging, error handling, and notifications
--- Co-authored with CoCo
 /*=============================================================================
   CLINICIAN-360-DQ-IMPLEMENTATION
   01_FRAMEWORK/002_utility_procedures.sql

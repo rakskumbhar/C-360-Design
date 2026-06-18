@@ -1,5 +1,4 @@
 -- SCD Type-2 hash-diff tracking for provider attributes in SILVER schema
--- Co-authored with CoCo
 /*=============================================================================
   03_SILVER/003_sp_scd2_provider_attributes.sql
 =============================================================================*/

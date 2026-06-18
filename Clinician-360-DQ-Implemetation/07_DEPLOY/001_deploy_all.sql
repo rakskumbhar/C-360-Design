@@ -1,5 +1,4 @@
 -- Full ordered deployment script for Clinician-360 DQ Framework
--- Co-authored with CoCo
 /*=============================================================================
   07_DEPLOY/001_deploy_all.sql
   

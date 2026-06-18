@@ -1,5 +1,4 @@
 -- Creates all configuration and DQ framework metadata tables for P360_DQ
--- Co-authored with CoCo
 /*=============================================================================
   CLINICIAN-360-DQ-IMPLEMENTATION
   00_CONFIG/002_configuration_tables.sql
