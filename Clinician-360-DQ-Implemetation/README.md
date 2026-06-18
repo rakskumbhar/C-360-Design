@@ -206,6 +206,7 @@ CREATE OR REPLACE TABLE DQ_FEED (
     DQ_RULE_INPUT               VARCHAR(200),
     CRITICALITY_IND             VARCHAR(1),
     ACTIVE_IND                  VARCHAR(1),
+    EXECUTION_GROUP             VARCHAR(50),
     DQ_RULE_INPUT_JOIN_TBL      VARCHAR(100),
     DQ_RULE_INPUT_JOIN_COL      VARCHAR(100),
     DQ_RULE_INPUT_WHERE_COL     VARCHAR(100),
@@ -217,6 +218,8 @@ CREATE OR REPLACE TABLE DQ_FEED (
 ```
 
 **Flag Behavior:** ACTIVE_IND=Y → include; CRITICALITY_IND=Y + FAIL → 'FAIL'; CRITICALITY_IND=N + FAIL → 'PASS-SOFT'
+
+**EXECUTION_GROUP:** Enables parallel batch execution of DQ checks. Tables in the same group run together. At 80-table scale, assign groups (e.g., GROUP_A, GROUP_B, GROUP_C) so Snowflake Tasks can process groups in parallel rather than sequentially looping through all tables.
 
 ### 6.5 DQ_LOG + DQ_LOG_HISTORY
 
@@ -338,677 +341,166 @@ Key-value store for runtime parameters — inherited from reference framework.
 | MAX_RETRY_COUNT | 3 | PIPELINE | Default retry attempts |
 | RETRY_DELAY_SECONDS | 60 | PIPELINE | Delay between retries |
 
-### 5.2 Step Registry (PKG_STEP_REGISTRY)
-
-Defines execution order and dependencies for the orchestrator.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| STEP_ID | NUMBER | Primary Key |
-| STEP_NAME | VARCHAR(200) | Human-readable step name |
-| STEP_LAYER | VARCHAR(20) | BRONZE, DQ_BRONZE, SILVER, DQ_SILVER, GOLD, AUDIT |
-| STEP_PROCEDURE | VARCHAR(500) | Fully qualified procedure name |
-| STEP_ORDER | NUMBER(5,1) | Execution sequence |
-| DEPENDS_ON_STEP_ID | ARRAY | Dependency step IDs |
-| IS_ACTIVE | BOOLEAN | Enable/disable |
-| IS_RESTARTABLE | BOOLEAN | Can resume from here |
-| RETRY_COUNT | NUMBER(2) | Max retry attempts |
-| RETRY_DELAY_SECONDS | NUMBER | Wait between retries |
-| TIMEOUT_MINUTES | NUMBER | Step timeout |
-| DESCRIPTION | VARCHAR(500) | Step description |
-
-**Step Execution Order:**
+### 9.2 Step Registry (PKG_STEP_REGISTRY)
 
 | Order | Step ID | Name | Layer | Dependencies |
 |-------|---------|------|-------|--------------|
 | 1.0 | 1 | STG_NPI_REGISTRY | BRONZE | None |
 | 1.1 | 2 | STG_SPECIALTY_TYPE | BRONZE | None |
 | 2.0 | 10 | DQ_CHECK_BRONZE | DQ_BRONZE | 1, 2 |
-| 3.0 | 20 | LOAD_SILVER_PROVIDER | SILVER | 10 |
+| 3.0 | 20 | LOAD_DIM_PROVIDER | SILVER | 10 |
 | 4.0 | 30 | DQ_CHECK_SILVER | DQ_SILVER | 20 |
 | 5.0 | 40 | SCD2_PROVIDER_ATTRIBUTES | SILVER | 30 |
-| 6.0 | 50 | LOAD_GOLD_DIM_PROVIDER | GOLD | 40 |
+| 6.0 | 50 | LOAD_FCT_PROVIDER_360 | GOLD | 40 |
 | 7.0 | 60 | AUDIT_REJECT_SUMMARY | AUDIT | 50 |
 
-### 5.3 Environment Configuration (ENV_CONFIG)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| ENVIRONMENT | VARCHAR(20) | DEV / QA / PROD (PK) |
-| SOURCE_DATABASE | VARCHAR(100) | Source database name |
-| SOURCE_SCHEMA | VARCHAR(100) | Source schema |
-| WAREHOUSE_NAME | VARCHAR(100) | Compute warehouse |
-| MAX_PARALLEL_STEPS | NUMBER(2) | Parallel execution limit |
-| DQ_REJECT_THRESHOLD | NUMBER(5,2) | DQ failure threshold % |
-| ENABLE_NOTIFICATIONS | BOOLEAN | Notification toggle |
-| IS_ACTIVE | BOOLEAN | Active environment flag |
-
 ---
 
-## 6. Data Quality Framework — Configuration Tables
+## 10. DQ Engine Procedure Design (SP_RUN_DQ_CHECK)
 
-### 6.1 DQ_CATEGORIES
-
-| Column | Type | Description |
-|--------|------|-------------|
-| CATEGORY_ID | INT | Primary Key |
-| CATEGORY_NM | VARCHAR(100) | Dimension name |
-| CATEGORY_DESC | VARCHAR(500) | Dimension description |
-
-**Seed Data:**
-
-| ID | Category | Description |
-|----|----------|-------------|
-| 1 | Accuracy | The degree to which data correctly reflects the real-world situation it represents |
-| 2 | Completeness | The extent to which all required data is present |
-| 3 | Consistency | The uniformity of data across different datasets or systems |
-| 4 | Uniqueness | Ensuring that each record is distinct and not duplicated |
-| 5 | Timeliness | The relevance of data in relation to the time it is needed |
-| 6 | Validity | The degree to which data conforms to defined formats or standards |
-| 7 | Integrity | The assurance that data is accurate, consistent, and reliable throughout its lifecycle and is not improperly modified |
-
-### 6.2 DQ_RULES
-
-| Column | Type | Description |
-|--------|------|-------------|
-| RULE_ID | INT | Primary Key (Sequence) |
-| CATEGORY_ID | INT | FK → DQ_CATEGORIES.CATEGORY_ID |
-| RULE_DESC | VARCHAR(500) | Human-readable description |
-| RULE_EXP | VARCHAR(4000) | Reusable SQL expression with placeholders |
-| ACTIVE_IND | VARCHAR(1) | Y = Active, N = Inactive |
-
-**Seed Data:**
-
-| Rule ID | Category | Description | Expression |
-|---------|----------|-------------|------------|
-| 1 | 2 (Completeness) | Validate if Nulls and blank values present | `CASE WHEN $input_value IS NULL OR $input_value = '' THEN 'FAIL' ELSE 'PASS' END` |
-| 2 | 6 (Validity) | Validate string length is 2 chars | `CASE WHEN LENGTH(TRIM(TO_CHAR($input_value))) <> 2 THEN 'FAIL' ELSE 'PASS' END` |
-| 3 | 6 (Validity) | Validate string length is 9 chars | `CASE WHEN LENGTH(TRIM(TO_CHAR($input_value))) <> 9 THEN 'FAIL' ELSE 'PASS' END` |
-| 4 | 6 (Validity) | Validate string length is 10 chars | `CASE WHEN LENGTH(TRIM(TO_CHAR($input_value))) <> 10 THEN 'FAIL' ELSE 'PASS' END` |
-| 5 | 6 (Validity) | Validate xxx-xx-xxxx format | `CASE WHEN SUBSTR($input_value,4,1)='-' AND SUBSTR($input_value,7,1)='-' AND LENGTH(REPLACE($input_value,'-',''))=9 THEN 'PASS' ELSE 'FAIL' END` |
-| 6 | 4 (Uniqueness) | Validate no duplicate records | `GROUP BY $input_value HAVING COUNT(*) > 1` |
-| 7 | 3 (Consistency) | Cross-column consistency validation | `CASE WHEN $input_value1 <> '0001-01-01' AND $input_value2 > 5000 THEN 'FAIL' ELSE 'PASS' END` |
-| 8 | 7 (Integrity) | Cross-table referential integrity | `SELECT CASE WHEN A.COL1 <> B.COL2 THEN 'FAIL' ELSE 'PASS' END FROM TABLE_A A JOIN TABLE_B B ON A.KEY = B.KEY` |
-| 9 | 1 (Accuracy) | Validate value exists in reference list | `CASE WHEN $input_value NOT IN (SELECT VALID_VALUE FROM REF_TABLE) THEN 'FAIL' ELSE 'PASS' END` |
-| 10 | 5 (Timeliness) | Validate data is not stale (within N days) | `CASE WHEN DATEDIFF('DAY', $input_value, CURRENT_DATE()) > 365 THEN 'FAIL' ELSE 'PASS' END` |
-
-### 6.3 DQ_FEEDS
-
-| Column | Type | Description |
-|--------|------|-------------|
-| FEED_ID | INT | Primary Key (Sequence) |
-| RULE_ID | INT | FK → DQ_RULES.RULE_ID |
-| TABLE_NM | VARCHAR(200) | Source table name |
-| LAYER | VARCHAR(20) | BRONZE or SILVER |
-| DQ_RULE_INPUT | VARCHAR(4000) | Column name(s) or SQL expression |
-| CRITICALITY_IND | VARCHAR(1) | Y = Critical (FAIL blocks), N = Non-critical (PASS-SOFT) |
-| FEED_CATEGORY | VARCHAR(20) | Single / Multiple / Complex |
-| DOMAIN | VARCHAR(100) | FK → DQ_EMAILS.DOMAIN (notification routing) |
-
-**Feed Categories:**
-
-| Category | Description | Example |
-|----------|-------------|---------|
-| **Single** | Rule applied on a single column | NULL check on STATE |
-| **Multiple** | Rule applied on multiple columns of same table | EFFECTIVE_DATE + EXPIRATION_DATE cross-check |
-| **Complex** | Rule applied across multiple tables via SQL | NPI exists in reference registry |
-
-### 6.4 DQ_EMAILS
-
-| Column | Type | Description |
-|--------|------|-------------|
-| EMAIL_ID | INT | Primary Key |
-| DOMAIN | VARCHAR(100) | Domain grouping (PROVIDERS, CLAIMS, CLINICS) |
-| EMAILS | VARCHAR(2000) | Comma-separated recipient list |
-
-**Seed Data:**
-
-| ID | Domain | Emails |
-|----|--------|--------|
-| 1 | PROVIDERS | abc@upmc.com,devang@citiustech.com,rakesh@citiustech.com |
-| 2 | CLAIMS | selva@xyz.com |
-| 3 | CLINICS | vekat@xyz.com,juan@xyz.com |
-
-### 6.5 DQ_RESULTS (Audit Output)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| RESULT_ID | INT | Primary Key (auto-increment) |
-| RULE_ID | INT | FK → DQ_RULES.RULE_ID |
-| FEED_ID | INT | FK → DQ_FEEDS.FEED_ID |
-| BUSINESS_DT | TIMESTAMP_NTZ | Business date of check |
-| RESULT | VARCHAR(20) | PASS / FAIL / PASS-SOFT |
-| SURROGATE_KEY | INT | Surrogate key of source record |
-| BUSINESS_KEY | VARCHAR(500) | Natural key to identify source record |
-| RUN_ID | VARCHAR(36) | FK → PKG_RUN_LOG.RUN_ID |
-| ETL_LOAD_TS | TIMESTAMP_NTZ | When the result was inserted |
-
-### 6.6 Relationships
+### Process Flow
 
 ```
-DQ_CATEGORIES.CATEGORY_ID  ─────────►  DQ_RULES.CATEGORY_ID
-DQ_RULES.RULE_ID           ─────────►  DQ_FEEDS.RULE_ID
-DQ_FEEDS.FEED_ID           ─────────►  DQ_RESULTS.FEED_ID
-DQ_RULES.RULE_ID           ─────────►  DQ_RESULTS.RULE_ID
-DQ_FEEDS.DOMAIN            ─────────►  DQ_EMAILS.DOMAIN
-PKG_RUN_LOG.RUN_ID         ─────────►  DQ_RESULTS.RUN_ID
-PKG_STEP_REGISTRY.STEP_ID  ─────────►  STEP_RUN_LOG.STEP_ID
+1. SP reads DQ_FEED for given TABLE_NM + LAYER (ACTIVE_IND = 'Y')
+2. Joins with DQ_RULE & DQ_CATEGORY tables
+3. DQ checks performed based on logic in DQ_RULE.RULE_EXP
+4. Failed records → DQ_STATUS updated as 'FAIL' on source table
+5. Passed records → DQ_STATUS updated as 'PASS'
+6. Non-critical fails → DQ_STATUS updated as 'PASS-SOFT'
+7. Results inserted in DQ_RESULT table
+8. Execution logged in DQ_LOG + DQ_LOG_HISTORY
+9. Email notifications sent with details of failed records
+```
+
+### Procedure Signature
+
+```
+SP_RUN_DQ_CHECK(P_RUN_ID VARCHAR, P_TABLE_NM VARCHAR, P_LAYER VARCHAR, P_DQ_BATCH_ID VARCHAR)
+```
+
+### Logic
+
+```
+1. INITIALIZE
+   - Read DQ_LOG for last dq_end_ts (incremental window)
+   - Set dq_start_ts = last dq_end_ts; dq_end_ts = CURRENT_TIMESTAMP
+
+2. FETCH FEEDS
+   - SELECT from DQ_FEED WHERE TABLE_NM AND LAYER AND ACTIVE_IND = 'Y'
+   - JOIN DQ_RULE + DQ_CATEGORY
+
+3. FOR EACH FEED:
+   a. Read RULE_CATEGORY (SIMPLE/MULTIPLE/COMPLEX/SQL FEED)
+   b. BUILD DYNAMIC SQL replacing ${INPUT1}, ${TABLE_NAME}, etc.
+   c. APPLY FILTER: WHERE DQ_STATUS IS NULL (new/changed records)
+   d. EXECUTE and capture results
+   e. INSERT failed records into DQ_RESULT
+   f. DETERMINE DQ_STATUS:
+      CRITICALITY_IND='Y' + FAIL → 'FAIL'
+      CRITICALITY_IND='N' + FAIL → 'PASS-SOFT'
+      PASS → 'PASS'
+
+4. AGGREGATE per record (worst wins: FAIL > PASS-SOFT > PASS)
+5. UPDATE source table SET DQ_STATUS
+6. LOG to DQ_LOG + DQ_LOG_HISTORY
+7. CHECK THRESHOLD → if exceeded, notify + return FAILED
+8. RETURN result object
 ```
 
 ---
 
-## 7. DQ Feeds Configuration (Rule-to-Table Mapping)
-
-### 7.1 Bronze Layer Feeds
-
-| Feed ID | Rule ID | Table | Layer | Column (DQ_RULE_INPUT) | Criticality | Category | Domain |
-|---------|---------|-------|-------|------------------------|-------------|----------|--------|
-| 1 | 1 | STG_NPI_REGISTRY | BRONZE | NPI_NUMBER | Y | Single | PROVIDERS |
-| 2 | 1 | STG_NPI_REGISTRY | BRONZE | PROVIDER_NAME | Y | Single | PROVIDERS |
-| 3 | 2 | STG_NPI_REGISTRY | BRONZE | STATE | Y | Single | PROVIDERS |
-| 4 | 4 | STG_NPI_REGISTRY | BRONZE | NPI_NUMBER | Y | Single | PROVIDERS |
-| 5 | 6 | STG_NPI_REGISTRY | BRONZE | NPI_NUMBER | Y | Single | PROVIDERS |
-| 6 | 1 | STG_NPI_REGISTRY | BRONZE | PHONE | N | Single | PROVIDERS |
-| 7 | 1 | STG_NPI_REGISTRY | BRONZE | TAXONOMY_CODE | N | Single | PROVIDERS |
-| 8 | 1 | STG_SPECIALTY_TYPE | BRONZE | SPECIALTY_CODE | Y | Single | PROVIDERS |
-| 9 | 1 | STG_SPECIALTY_TYPE | BRONZE | SPECIALTY_NAME | Y | Single | PROVIDERS |
-| 10 | 2 | STG_SPECIALTY_TYPE | BRONZE | STATE | Y | Single | PROVIDERS |
-| 11 | 1 | STG_SPECIALTY_TYPE | BRONZE | EXPIRATION_DATE | N | Single | PROVIDERS |
-| 12 | 1 | STG_SPECIALTY_TYPE | BRONZE | BOARD_CERTIFICATION_REQ | N | Single | PROVIDERS |
-
-### 7.2 Silver Layer Feeds
-
-| Feed ID | Rule ID | Table | Layer | Column (DQ_RULE_INPUT) | Criticality | Category | Domain |
-|---------|---------|-------|-------|------------------------|-------------|----------|--------|
-| 13 | 1 | DIM_PROVIDER | SILVER | STATE | Y | Single | PROVIDERS |
-| 14 | 1 | DIM_PROVIDER | SILVER | ZIP_CODE | Y | Single | PROVIDERS |
-| 15 | 1 | DIM_PROVIDER | SILVER | PROVIDER_NPI | Y | Single | PROVIDERS |
-| 16 | 1 | DIM_PROVIDER | SILVER | DELETION_FLAG | Y | Single | PROVIDERS |
-| 17 | 1 | DIM_PROVIDER | SILVER | PROVIDER_NAME | Y | Single | PROVIDERS |
-| 18 | 2 | DIM_PROVIDER | SILVER | STATE | Y | Single | PROVIDERS |
-| 19 | 4 | DIM_PROVIDER | SILVER | PROVIDER_NPI | Y | Single | PROVIDERS |
-| 20 | 3 | DIM_PROVIDER | SILVER | PROVIDER_TIN | Y | Single | PROVIDERS |
-| 21 | 5 | DIM_PROVIDER | SILVER | PROVIDER_TIN | Y | Single | PROVIDERS |
-| 22 | 6 | DIM_PROVIDER | SILVER | PROVIDER_NPI | Y | Single | PROVIDERS |
-
----
-
-## 8. Source & Target Table Definitions
-
-### 8.1 RAW Layer (RAW_INGESTION schema — immutable source)
-
-#### RAW_NPI_REGISTRY
-
-| Column | Type | Description |
-|--------|------|-------------|
-| NPI_NUMBER | VARCHAR(10) | 10-digit NPI identifier |
-| PROVIDER_FIRST_NAME | VARCHAR(100) | First name |
-| PROVIDER_LAST_NAME | VARCHAR(100) | Last name |
-| PROVIDER_NAME | VARCHAR(200) | Full provider name |
-| CREDENTIAL | VARCHAR(50) | Professional credential (MD, DO, NP) |
-| GENDER | VARCHAR(1) | M/F |
-| STATE | VARCHAR(10) | State code |
-| ZIP_CODE | VARCHAR(10) | ZIP code |
-| TAXONOMY_CODE | VARCHAR(20) | Provider taxonomy classification |
-| PHONE | VARCHAR(15) | Phone number |
-| NPI_DEACTIVATION_FLAG | VARCHAR(1) | Y/N deactivation indicator |
-| ENUMERATION_DATE | DATE | NPI enumeration date |
-| SOURCE_SYSTEM | VARCHAR(50) | Source system identifier |
-| _LOADED_AT | TIMESTAMP_NTZ | Ingestion timestamp (immutable) |
-
-#### RAW_SPECIALTY_TYPE
-
-| Column | Type | Description |
-|--------|------|-------------|
-| SPECIALTY_CODE | VARCHAR(20) | Specialty taxonomy code |
-| SPECIALTY_NAME | VARCHAR(200) | Specialty description |
-| SPECIALTY_CATEGORY | VARCHAR(100) | Grouping (Primary Care, Surgical, etc.) |
-| BOARD_CERTIFICATION_REQ | VARCHAR(1) | Y/N required flag |
-| STATE | VARCHAR(10) | State registered |
-| EFFECTIVE_DATE | DATE | When active |
-| EXPIRATION_DATE | DATE | When expires (NULL if active) |
-| SOURCE_SYSTEM | VARCHAR(50) | Source identifier |
-| _LOADED_AT | TIMESTAMP_NTZ | Ingestion timestamp |
-
-### 8.2 Bronze Layer (BRONZE schema — staged, DQ-validated)
-
-#### STG_NPI_REGISTRY
-
-| Column | Type | Description |
-|--------|------|-------------|
-| NPI_SK | INT (AUTOINCREMENT) | Surrogate key |
-| NPI_NUMBER | VARCHAR(10) | 10-digit NPI |
-| PROVIDER_FIRST_NAME | VARCHAR(100) | First name |
-| PROVIDER_LAST_NAME | VARCHAR(100) | Last name |
-| PROVIDER_NAME | VARCHAR(200) | Full name |
-| CREDENTIAL | VARCHAR(50) | Credential |
-| GENDER | VARCHAR(1) | Gender code |
-| STATE | VARCHAR(2) | 2-char state code |
-| ZIP_CODE | VARCHAR(10) | ZIP code |
-| TAXONOMY_CODE | VARCHAR(20) | Taxonomy code |
-| PHONE | VARCHAR(15) | Phone number |
-| NPI_DEACTIVATION_FLAG | VARCHAR(1) | Deactivation indicator |
-| ENUMERATION_DATE | DATE | NPI enumeration date |
-| SOURCE_SYSTEM | VARCHAR(50) | Source system |
-| LOAD_DT | TIMESTAMP_NTZ | Load timestamp |
-| UPDATE_DT | TIMESTAMP_NTZ | Last update |
-| ROW_STATUS | VARCHAR(20) | ACTIVE / INACTIVE |
-| DQ_STATUS | VARCHAR(20) | **PASS / FAIL / PASS-SOFT** |
-| RECORD_HASH | VARCHAR(64) | SHA-256 hash for CDC |
-| JOB_ID | VARCHAR(36) | Job/run identifier |
-| _SOURCE_LOADED_AT | TIMESTAMP_NTZ | Source ingestion time (HWM) |
-| _RUN_ID | VARCHAR(36) | Pipeline run ID |
-
-#### STG_SPECIALTY_TYPE
-
-| Column | Type | Description |
-|--------|------|-------------|
-| SPECIALTY_SK | INT (AUTOINCREMENT) | Surrogate key |
-| SPECIALTY_CODE | VARCHAR(20) | Specialty code |
-| SPECIALTY_NAME | VARCHAR(200) | Specialty name |
-| SPECIALTY_CATEGORY | VARCHAR(100) | Category grouping |
-| BOARD_CERTIFICATION_REQ | VARCHAR(1) | Y/N |
-| STATE | VARCHAR(2) | 2-char state code |
-| EFFECTIVE_DATE | DATE | Effective from |
-| EXPIRATION_DATE | DATE | Expires on |
-| SOURCE_SYSTEM | VARCHAR(50) | Source system |
-| LOAD_DT | TIMESTAMP_NTZ | Load timestamp |
-| UPDATE_DT | TIMESTAMP_NTZ | Last update |
-| ROW_STATUS | VARCHAR(20) | ACTIVE / INACTIVE |
-| DQ_STATUS | VARCHAR(20) | **PASS / FAIL / PASS-SOFT** |
-| RECORD_HASH | VARCHAR(64) | SHA-256 hash for CDC |
-| JOB_ID | VARCHAR(36) | Job identifier |
-| _SOURCE_LOADED_AT | TIMESTAMP_NTZ | Source ingestion time |
-| _RUN_ID | VARCHAR(36) | Pipeline run ID |
-
-### 8.3 Silver Layer (SILVER schema — unified, deduplicated)
-
-#### DIM_PROVIDER (Unified Provider Dimension)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| PROVIDER_SK | INT | Surrogate key |
-| PROVIDER_BK | VARCHAR(10) | Business key (NPI_NUMBER) |
-| PROVIDER_NAME | VARCHAR(200) | Full provider name |
-| PROVIDER_FIRST_NAME | VARCHAR(100) | First name |
-| PROVIDER_LAST_NAME | VARCHAR(100) | Last name |
-| CREDENTIAL | VARCHAR(50) | Credential |
-| GENDER | VARCHAR(1) | Gender code |
-| PRIMARY_SPECIALTY | VARCHAR(200) | Primary specialty name |
-| SPECIALTY_CATEGORY | VARCHAR(100) | Specialty grouping |
-| STATE | VARCHAR(2) | State code |
-| ZIP_CODE | VARCHAR(10) | ZIP |
-| PHONE | VARCHAR(15) | Phone |
-| PROVIDER_TIN | VARCHAR(11) | Tax ID (xxx-xx-xxxx format) |
-| PROVIDER_NPI | VARCHAR(10) | NPI number |
-| DELETION_FLAG | VARCHAR(1) | Y/N soft-delete flag |
-| SOURCE_SYSTEM | VARCHAR(50) | Source |
-| LOAD_DT | TIMESTAMP_NTZ | Initial load date |
-| UPDATE_DT | TIMESTAMP_NTZ | Last update timestamp |
-| ROW_STATUS | VARCHAR(20) | ACTIVE / INACTIVE |
-| DQ_STATUS | VARCHAR(20) | **PASS / FAIL / PASS-SOFT** |
-| RECORD_HASH | VARCHAR(64) | Hash for CDC |
-| JOB_ID | VARCHAR(36) | Job ID |
-| _RUN_ID | VARCHAR(36) | Pipeline run ID |
-
-### 8.4 Gold Layer (GOLD schema — business-ready, cleansed)
-
-#### FCT_PROVIDER_360 (One Big Table / Summary View)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| PROVIDER_SK | INT | Surrogate key |
-| PROVIDER_NPI | VARCHAR(10) | NPI number |
-| PROVIDER_NAME | VARCHAR(200) | Full name |
-| CREDENTIAL | VARCHAR(50) | Credential |
-| GENDER_DESC | VARCHAR(10) | Male / Female / Unknown |
-| PRIMARY_SPECIALTY | VARCHAR(200) | Specialty |
-| SPECIALTY_CATEGORY | VARCHAR(100) | Specialty group |
-| STATE | VARCHAR(2) | State |
-| ZIP_CODE | VARCHAR(10) | ZIP |
-| PROVIDER_STATUS | VARCHAR(20) | ACTIVE / INACTIVE |
-| IS_CURRENT | BOOLEAN | Current SCD2 version flag |
-| VALID_FROM | TIMESTAMP_NTZ | SCD2 valid-from |
-| VALID_TO | TIMESTAMP_NTZ | SCD2 valid-to |
-| _LOADED_AT | TIMESTAMP_NTZ | Gold load timestamp |
-| _RUN_ID | VARCHAR(36) | Pipeline run ID |
-
-**Gold layer filter:** `WHERE DQ_STATUS IN ('PASS', 'PASS-SOFT')` from Silver.
-
-### 8.5 Snapshots (SCD Type-2)
-
-#### SCD2_PROVIDER_ATTRIBUTES
-
-| Column | Type | Description |
-|--------|------|-------------|
-| SCD_KEY | VARCHAR(64) | MD5 hash key |
-| PROVIDER_BK | VARCHAR(10) | Business key (NPI) |
-| PROVIDER_NAME | VARCHAR(200) | Full name |
-| CREDENTIAL | VARCHAR(50) | Credential |
-| STATE | VARCHAR(2) | State |
-| ZIP_CODE | VARCHAR(10) | ZIP |
-| PRIMARY_SPECIALTY | VARCHAR(200) | Specialty |
-| PROVIDER_STATUS | VARCHAR(20) | Status |
-| _VALID_FROM | TIMESTAMP_NTZ | Version start |
-| _VALID_TO | TIMESTAMP_NTZ | Version end (9999-12-31 if current) |
-| _IS_CURRENT | BOOLEAN | Current version flag |
-| _HASH_DIFF | VARCHAR(64) | Change detection hash |
-| _RUN_ID | VARCHAR(36) | Pipeline run ID |
-
----
-
-## 9. Audit & Observability Tables
-
-### 9.1 PKG_RUN_LOG (Master Run Record)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| RUN_ID | VARCHAR(36) | UUID Primary Key |
-| PACKAGE_NAME | VARCHAR(100) | Package identifier |
-| RUN_MODE | VARCHAR(20) | FULL / INCREMENTAL / RESUME / RERUN_STEP |
-| ENVIRONMENT | VARCHAR(20) | DEV / QA / PROD |
-| RUN_STATUS | VARCHAR(20) | RUNNING / COMPLETED / FAILED / CANCELLED |
-| INITIATED_BY | VARCHAR(100) | User who started run |
-| START_TIMESTAMP | TIMESTAMP_NTZ | Run start time |
-| END_TIMESTAMP | TIMESTAMP_NTZ | Run end time |
-| DURATION_SECONDS | NUMBER | Total duration |
-| TOTAL_ROWS_READ | NUMBER | Aggregate rows read |
-| TOTAL_ROWS_WRITTEN | NUMBER | Aggregate rows written |
-| TOTAL_ROWS_REJECTED | NUMBER | Aggregate rejects |
-| TOTAL_STEPS | NUMBER | Steps attempted |
-| COMPLETED_STEPS | NUMBER | Steps completed |
-| FAILED_STEP_ID | NUMBER | Which step failed |
-| ERROR_MESSAGE | VARCHAR(4000) | Failure detail |
-| RESUME_FROM_STEP_ID | NUMBER | Resume point |
-| RUN_PARAMETERS | VARIANT | Input parameters JSON |
-
-### 9.2 STEP_RUN_LOG (Per-Step Details)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| STEP_RUN_ID | VARCHAR(36) | UUID Primary Key |
-| RUN_ID | VARCHAR(36) | FK → PKG_RUN_LOG |
-| STEP_ID | NUMBER | Step identifier |
-| STEP_NAME | VARCHAR(200) | Step name |
-| STEP_LAYER | VARCHAR(20) | Layer |
-| STEP_STATUS | VARCHAR(20) | RUNNING / COMPLETED / FAILED / SKIPPED / RETRYING |
-| ATTEMPT_NUMBER | NUMBER(3) | Retry attempt count |
-| START_TIMESTAMP | TIMESTAMP_NTZ | Step start |
-| END_TIMESTAMP | TIMESTAMP_NTZ | Step end |
-| DURATION_SECONDS | NUMBER | Step duration |
-| ROWS_READ | NUMBER | Rows processed |
-| ROWS_WRITTEN | NUMBER | Rows inserted/merged |
-| ROWS_REJECTED | NUMBER | Rows rejected |
-| ROWS_UPDATED | NUMBER | Rows updated |
-| REJECT_PERCENTAGE | NUMBER(5,2) | Reject % |
-| DQ_PASSED | BOOLEAN | DQ threshold respected |
-| ERROR_MESSAGE | VARCHAR(4000) | Error details |
-| SQL_QUERY_ID | VARCHAR(200) | Snowflake query ID |
-| METADATA | VARIANT | Additional context |
-
-### 9.3 ERROR_LOG
-
-| Column | Type | Description |
-|--------|------|-------------|
-| ERROR_LOG_ID | VARCHAR(36) | UUID PK |
-| RUN_ID | VARCHAR(36) | FK → PKG_RUN_LOG |
-| STEP_RUN_ID | VARCHAR(36) | FK → STEP_RUN_LOG |
-| STEP_NAME | VARCHAR(200) | Step name |
-| ERROR_TIMESTAMP | TIMESTAMP_NTZ | When error occurred |
-| ERROR_CODE | VARCHAR(20) | Snowflake error code |
-| ERROR_STATE | VARCHAR(10) | SQL state |
-| ERROR_MESSAGE | VARCHAR(4000) | Error description |
-| ERROR_STACK_TRACE | VARCHAR(8000) | Stack trace |
-| SQL_STATEMENT | VARCHAR(8000) | Failing SQL |
-| SEVERITY | VARCHAR(10) | ERROR / WARNING / INFO |
-| IS_RETRYABLE | BOOLEAN | Can retry flag |
-
-### 9.4 DQ_RUN_LOG (DQ Metrics Per Run)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| DQ_LOG_ID | VARCHAR(36) | UUID PK |
-| RUN_ID | VARCHAR(36) | FK → PKG_RUN_LOG |
-| STEP_RUN_ID | VARCHAR(36) | FK → STEP_RUN_LOG |
-| SOURCE_TABLE | VARCHAR(200) | Table checked |
-| TOTAL_RECORDS | NUMBER | Total records evaluated |
-| PASSED_RECORDS | NUMBER | Records passed |
-| FAILED_RECORDS | NUMBER | Records failed (hard) |
-| SOFT_PASS_RECORDS | NUMBER | Records soft-passed |
-| REJECT_PERCENTAGE | NUMBER(5,2) | Fail % |
-| THRESHOLD_EXCEEDED | BOOLEAN | Circuit breaker triggered |
-| THRESHOLD_VALUE | NUMBER(5,2) | Configured threshold |
-| RULES_EVALUATED | NUMBER | Number of rules run |
-| RULES_FAILED | NUMBER | Rules with failures |
-
-### 9.5 NOTIFICATION_LOG
-
-| Column | Type | Description |
-|--------|------|-------------|
-| NOTIFICATION_LOG_ID | VARCHAR(36) | UUID PK |
-| RUN_ID | VARCHAR(36) | FK → PKG_RUN_LOG |
-| NOTIFICATION_TYPE | VARCHAR(50) | EMAIL |
-| EVENT_TYPE | VARCHAR(50) | RUN_START / RUN_COMPLETE / RUN_FAILURE / DQ_THRESHOLD |
-| RECIPIENTS | VARCHAR(2000) | Email addresses |
-| SUBJECT | VARCHAR(500) | Email subject |
-| BODY | VARCHAR(4000) | Email body |
-| SEND_STATUS | VARCHAR(20) | PENDING / SENT / FAILED |
-| SENT_AT | TIMESTAMP_NTZ | Send timestamp |
-
-### 9.6 Reject Tables
-
-#### REJECT.REJECT_RECORDS
-
-| Column | Type | Description |
-|--------|------|-------------|
-| REJECT_ID | VARCHAR(36) | UUID |
-| RUN_ID | VARCHAR(36) | FK → PKG_RUN_LOG |
-| STEP_NAME | VARCHAR(200) | Which step rejected |
-| SOURCE_TABLE | VARCHAR(200) | Source table |
-| REJECT_REASONS | ARRAY | Array of reason codes |
-| RECORD_KEY | VARCHAR(500) | Business key of rejected record |
-| RECORD_DATA | VARIANT | Full record as JSON |
-| SEVERITY | VARCHAR(10) | ERROR / WARNING |
-| REJECTED_AT | TIMESTAMP_NTZ | Rejection timestamp |
-
-#### REJECT.REJECT_SUMMARY
-
-| Column | Type | Description |
-|--------|------|-------------|
-| SUMMARY_ID | VARCHAR(36) | UUID |
-| RUN_ID | VARCHAR(36) | FK → PKG_RUN_LOG |
-| STEP_NAME | VARCHAR(200) | Step name |
-| SOURCE_TABLE | VARCHAR(200) | Table |
-| REJECT_REASON | VARCHAR(200) | Reason code |
-| REJECT_COUNT | NUMBER | Count of rejects for this reason |
-| FIRST_REJECTED_AT | TIMESTAMP_NTZ | First occurrence |
-| LAST_REJECTED_AT | TIMESTAMP_NTZ | Last occurrence |
-
----
-
-## 10. DQ Engine Procedure Design
-
-### 10.1 SP_RUN_DQ_CHECK (Core Generic Engine)
-
-```
-Signature:
-  SP_RUN_DQ_CHECK(
-    P_RUN_ID     VARCHAR,    -- Pipeline run identifier
-    P_TABLE_NM   VARCHAR,    -- Table to check (e.g., 'STG_NPI_REGISTRY')
-    P_LAYER      VARCHAR,    -- Layer (e.g., 'BRONZE')
-    P_JOB_ID     VARCHAR     -- Job execution identifier
-  )
-
-Returns: VARIANT (status, counts, threshold info)
-
-Logic:
-  1. INITIALIZE
-     - Log step start
-     - Get configured threshold for this layer
-
-  2. FETCH FEEDS
-     - Query DQ_FEEDS WHERE TABLE_NM = P_TABLE_NM AND LAYER = P_LAYER
-     - Join DQ_RULES to get RULE_EXP, CATEGORY_ID
-     - Only process where ACTIVE_IND = 'Y'
-
-  3. FOR EACH FEED (cursor loop):
-     a. Determine FEED_CATEGORY (Single / Multiple / Complex)
-     
-     b. BUILD DYNAMIC SQL:
-        - Single:  Replace $input_value with column name
-        - Multiple: Replace $input_value1, $input_value2 with respective columns
-        - Complex: Use RULE_EXP as-is (full SQL)
-     
-     c. EXECUTE against source table:
-        - Evaluate RULE_EXP for each record
-        - Capture SURROGATE_KEY and BUSINESS_KEY per record
-     
-     d. DETERMINE OUTCOME per record:
-        - If RULE_EXP = 'PASS' → record result = PASS
-        - If RULE_EXP = 'FAIL' AND CRITICALITY_IND = 'Y' → record result = FAIL
-        - If RULE_EXP = 'FAIL' AND CRITICALITY_IND = 'N' → record result = PASS-SOFT
-     
-     e. INSERT results into AUDIT.DQ_RESULTS
-
-  4. AGGREGATE DQ_STATUS per record (worst-case wins):
-     - Priority: FAIL > PASS-SOFT > PASS
-     - If any critical rule fails → overall DQ_STATUS = 'FAIL'
-     - If only non-critical rules fail → overall DQ_STATUS = 'PASS-SOFT'
-     - If all rules pass → DQ_STATUS = 'PASS'
-
-  5. UPDATE source table:
-     - SET DQ_STATUS = aggregated result per surrogate key
-
-  6. CHECK THRESHOLD (Circuit Breaker):
-     - Calculate: fail_pct = (FAIL_COUNT / TOTAL_COUNT) * 100
-     - If fail_pct > configured threshold → return THRESHOLD_EXCEEDED = TRUE
-     - Log to DQ_RUN_LOG
-
-  7. NOTIFY (if threshold exceeded):
-     - Lookup DQ_EMAILS by DOMAIN from DQ_FEEDS
-     - Log notification to NOTIFICATION_LOG
-     - (Production: SYSTEM$SEND_EMAIL)
-
-  8. RETURN result object
-```
-
-### 10.2 SP_RUN_DQ_BRONZE (Bronze Layer Wrapper)
-
-```
-Calls SP_RUN_DQ_CHECK for each bronze table:
-  - SP_RUN_DQ_CHECK(run_id, 'STG_NPI_REGISTRY', 'BRONZE', job_id)
-  - SP_RUN_DQ_CHECK(run_id, 'STG_SPECIALTY_TYPE', 'BRONZE', job_id)
-
-If ANY table exceeds threshold → return FAILED (blocks Silver)
-```
-
-### 10.3 SP_RUN_DQ_SILVER (Silver Layer Wrapper)
-
-```
-Calls SP_RUN_DQ_CHECK for silver tables:
-  - SP_RUN_DQ_CHECK(run_id, 'DIM_PROVIDER', 'SILVER', job_id)
-
-If threshold exceeded → return FAILED (blocks Gold)
-```
-
----
-
-## 11. DQ Rule Expression Patterns
-
-### 11.1 Placeholder Reference
-
-| Placeholder | Used In | Description |
-|-------------|---------|-------------|
-| `$input_value` | Single category | Replaced with column value reference |
-| `$input_value1`, `$input_value2` | Multiple category | Replaced with respective column values |
-| Full SQL statement | Complex category | Executed as-is against the database |
-
-### 11.2 Expression Examples
-
-```sql
--- COMPLETENESS: Null/blank check (Rule 1)
-CASE WHEN $input_value IS NULL OR $input_value = '' THEN 'FAIL' ELSE 'PASS' END
-
--- VALIDITY: Length = 2 chars (Rule 2, e.g., STATE)
-CASE WHEN LENGTH(TRIM(TO_CHAR($input_value))) <> 2 THEN 'FAIL' ELSE 'PASS' END
-
--- VALIDITY: Length = 10 chars (Rule 4, e.g., NPI)
-CASE WHEN LENGTH(TRIM(TO_CHAR($input_value))) <> 10 THEN 'FAIL' ELSE 'PASS' END
-
--- VALIDITY: Format xxx-xx-xxxx (Rule 5, e.g., TIN)
-CASE WHEN SUBSTR($input_value,4,1) = '-' AND SUBSTR($input_value,7,1) = '-'
-     AND LENGTH(REPLACE($input_value,'-','')) = 9 THEN 'PASS' ELSE 'FAIL' END
-
--- UNIQUENESS: Duplicate detection (Rule 6)
-GROUP BY $input_value HAVING COUNT(*) > 1
-
--- CONSISTENCY: Multi-column validation (Rule 7)
-CASE WHEN $input_value1 <> '0001-01-01' AND $input_value2 > 5000
-     THEN 'FAIL' ELSE 'PASS' END
-
--- INTEGRITY: Cross-table join validation (Rule 8)
-SELECT CASE WHEN A.CLAIM_DT <> B.PROCEDURE_DT AND A.CLAIM_AMT <> 0
-       THEN 'FAIL' ELSE 'PASS' END
-FROM CLAIMS A JOIN PROCEDURE B ON A.CLAIM_ID = B.PROCEDURE_ID
-```
+## 11. Source & Target Tables (Summary)
+
+### Bronze (STG_ prefix)
+- **STG_NPI_REGISTRY** — NPI_SK, NPI_NUMBER, PROVIDER_NAME, STATE, etc. + DQ_STATUS
+- **STG_SPECIALTY_TYPE** — SPECIALTY_SK, SPECIALTY_CODE, SPECIALTY_NAME, STATE, etc. + DQ_STATUS
+
+### Silver (DIM_ prefix)
+- **DIM_PROVIDER** — PROVIDER_SK, PROVIDER_NPI, PROVIDER_NAME, STATE, ADDRESS, etc. + DQ_STATUS
+- **SCD2_PROVIDER_ATTRIBUTES** — SCD_KEY, PROVIDER_BK, _VALID_FROM, _VALID_TO, _IS_CURRENT, _HASH_DIFF
+
+### Gold (FCT_ prefix)
+- **FCT_PROVIDER_360** — PROVIDER_SK, PROVIDER_NPI, PROVIDER_NAME, business-derived columns
+- Gold filter: `WHERE DQ_STATUS IN ('PASS','PASS-SOFT')` from Silver
 
 ---
 
 ## 12. Pipeline Execution Flow (End-to-End)
 
+### Design Decision: No Inline Rejects at Bronze
+
+Bronze layer is a **near-replica of RAW** with minimal transformation (type casting, column renaming) but **no DQ-based filtering**. All records — including bad data — land in Bronze with `DQ_STATUS = NULL`. The DQ engine evaluates them in Step 2.
+
+**Pros:**
+- Bronze is a faithful copy of source — nothing is silently dropped
+- DQ logic is centralized in the DQ engine (single place to maintain rules)
+- Bad records remain visible and queryable in Bronze for debugging
+- Rule changes don't require re-ingestion — just re-run DQ engine
+- Clear separation of concerns: ingestion vs. validation
+
+**Cons:**
+- Bronze tables are larger (include bad records that will never reach Silver)
+- DQ engine must process all records including obviously bad ones
+- Slightly more compute spent evaluating records that are clearly invalid
+
+**Mitigation:** The incremental DQ processing (via DQ_LOG timestamps and DQ_STATUS IS NULL filter) ensures only new/changed records are evaluated, keeping compute manageable.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │  SP_RUN_PACKAGE('INCREMENTAL')                                                   │
 │                                                                                   │
-│  Step 1: BRONZE STAGING                                                          │
+│  Step 1: BRONZE STAGING (near-replica of RAW, no DQ filtering)                   │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
 │  │  SP_STG_NPI_REGISTRY(run_id, mode)                                      │    │
-│  │    → Read from RAW_INGESTION.RAW_NPI_REGISTRY                           │    │
-│  │    → Apply inline reject (NULL NPI, invalid format, etc.)               │    │
-│  │    → Insert passing records into BRONZE.STG_NPI_REGISTRY                │    │
-│  │    → Rejected records → REJECT.REJECT_RECORDS                           │    │
+│  │    → Read from RAW_INGESTION.RAW_NPI_REGISTRY (HWM-based)              │    │
+│  │    → Minimal transform: type casting, column rename                     │    │
+│  │    → Insert ALL records into BRONZE.STG_NPI_REGISTRY (DQ_STATUS=NULL)  │    │
+│  │    → No inline reject — bad records included for DQ evaluation later   │    │
 │  │                                                                          │    │
 │  │  SP_STG_SPECIALTY_TYPE(run_id, mode)                                    │    │
-│  │    → Read from RAW_INGESTION.RAW_SPECIALTY_TYPE                         │    │
-│  │    → Insert into BRONZE.STG_SPECIALTY_TYPE                              │    │
+│  │    → Read from RAW_INGESTION.RAW_SPECIALTY_TYPE (HWM-based)            │    │
+│  │    → Insert ALL records into BRONZE.STG_SPECIALTY_TYPE (DQ_STATUS=NULL) │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 │                                     │                                            │
 │                                     ▼                                            │
 │  Step 2: DQ CHECK — BRONZE                                                      │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
 │  │  SP_RUN_DQ_BRONZE(run_id)                                               │    │
-│  │    → SP_RUN_DQ_CHECK(run_id, 'STG_NPI_REGISTRY', 'BRONZE', job_id)     │    │
-│  │    → SP_RUN_DQ_CHECK(run_id, 'STG_SPECIALTY_TYPE', 'BRONZE', job_id)   │    │
-│  │    → Updates DQ_STATUS on each Bronze table record                      │    │
-│  │    → Inserts detailed results into AUDIT.DQ_RESULTS                     │    │
-│  │    → If threshold exceeded → PIPELINE STOPS HERE (circuit breaker)      │    │
+│  │    → SP_RUN_DQ_CHECK(run_id, 'STG_NPI_REGISTRY', 'BRONZE', batch_id)   │    │
+│  │    → SP_RUN_DQ_CHECK(run_id, 'STG_SPECIALTY_TYPE', 'BRONZE', batch_id) │    │
+│  │    → Evaluates all records WHERE DQ_STATUS IS NULL                      │    │
+│  │    → Updates DQ_STATUS (PASS / FAIL / PASS-SOFT) on each record         │    │
+│  │    → Inserts results into AUDIT.DQ_RESULT                               │    │
+│  │    → Logs to AUDIT.DQ_LOG + DQ_LOG_HISTORY                             │    │
+│  │    → If threshold exceeded → PIPELINE STOPS (circuit breaker)           │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 │                                     │                                            │
-│                          (Only if DQ passed)                                     │
+│                          (Only if DQ passed threshold)                            │
 │                                     ▼                                            │
 │  Step 3: SILVER LOAD                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │  SP_LOAD_SILVER_PROVIDER(run_id, mode)                                  │    │
+│  │  SP_LOAD_DIM_PROVIDER(run_id, mode)                                     │    │
 │  │    → SELECT from Bronze WHERE DQ_STATUS IN ('PASS', 'PASS-SOFT')        │    │
 │  │    → Unify NPI + Specialty into DIM_PROVIDER                            │    │
-│  │    → MERGE into SILVER.DIM_PROVIDER                                     │    │
+│  │    → MERGE into SILVER.DIM_PROVIDER (DQ_STATUS = NULL on new/changed)   │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 │                                     │                                            │
 │                                     ▼                                            │
 │  Step 4: DQ CHECK — SILVER                                                       │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
 │  │  SP_RUN_DQ_SILVER(run_id)                                               │    │
-│  │    → SP_RUN_DQ_CHECK(run_id, 'DIM_PROVIDER', 'SILVER', job_id)         │    │
+│  │    → SP_RUN_DQ_CHECK(run_id, 'DIM_PROVIDER', 'SILVER', batch_id)       │    │
+│  │    → Evaluates records WHERE DQ_STATUS IS NULL                          │    │
 │  │    → Updates DQ_STATUS on DIM_PROVIDER                                  │    │
-│  │    → If threshold exceeded → PIPELINE STOPS HERE                        │    │
+│  │    → If threshold exceeded → PIPELINE STOPS                             │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 │                                     │                                            │
-│                          (Only if DQ passed)                                     │
+│                          (Only if DQ passed threshold)                            │
 │                                     ▼                                            │
-│  Step 5: SCD TYPE-2                                                              │
+│  Step 5: SCD TYPE-2 (in SILVER schema)                                           │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
 │  │  SP_SCD2_PROVIDER_ATTRIBUTES(run_id, mode)                              │    │
-│  │    → Hash-diff comparison against SNAPSHOTS.SCD2_PROVIDER_ATTRIBUTES    │    │
+│  │    → Hash-diff comparison on SILVER.SCD2_PROVIDER_ATTRIBUTES            │    │
 │  │    → Close expired versions (_IS_CURRENT = FALSE)                       │    │
 │  │    → Insert new versions                                                 │    │
 │  │    → Only processes DQ_STATUS IN ('PASS', 'PASS-SOFT')                  │    │
@@ -1017,9 +509,9 @@ FROM CLAIMS A JOIN PROCEDURE B ON A.CLAIM_ID = B.PROCEDURE_ID
 │                                     ▼                                            │
 │  Step 6: GOLD LOAD                                                               │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │  SP_LOAD_GOLD_PROVIDER(run_id, mode)                                    │    │
-│  │    → Build FCT_PROVIDER_360 from SCD2 snapshot                          │    │
-│  │    → Only current versions with DQ_STATUS IN ('PASS','PASS-SOFT')       │    │
+│  │  SP_LOAD_FCT_PROVIDER_360(run_id, mode)                                 │    │
+│  │    → Build from SCD2 snapshot (current versions only)                   │    │
+│  │    → Only WHERE DQ_STATUS IN ('PASS','PASS-SOFT') from Silver           │    │
 │  │    → Derive business attributes (gender_desc, status_desc, etc.)        │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 │                                     │                                            │
@@ -1027,7 +519,7 @@ FROM CLAIMS A JOIN PROCEDURE B ON A.CLAIM_ID = B.PROCEDURE_ID
 │  Step 7: AUDIT & REPORTING                                                       │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
 │  │  SP_AUDIT_REJECT_SUMMARY(run_id)                                        │    │
-│  │    → Aggregate reject reasons into REJECT.REJECT_SUMMARY                │    │
+│  │    → Aggregate DQ failures from DQ_RESULT into summaries                │    │
 │  │    → Log DQ metrics to AUDIT.DQ_RUN_LOG                                 │    │
 │  │    → Send completion notification                                        │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
@@ -1202,7 +694,7 @@ PROCEDURE SP_RUN_PACKAGE(P_RUN_MODE, P_RESUME_RUN_ID, P_STEP_ID):
 - **Tracked columns:** Provider attributes that change over time (status, specialty, address, credential)
 - **Hash-diff:** MD5 of all tracked columns for change detection
 - **Versioning:** `_VALID_FROM`, `_VALID_TO`, `_IS_CURRENT`
-- **Location:** `SNAPSHOTS.SCD2_PROVIDER_ATTRIBUTES`
+- **Location:** `SILVER.SCD2_PROVIDER_ATTRIBUTES`
 
 ### 17.2 Logic
 

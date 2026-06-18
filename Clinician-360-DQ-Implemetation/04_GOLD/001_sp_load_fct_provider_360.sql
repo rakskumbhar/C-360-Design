@@ -1,0 +1,60 @@
+-- Builds Gold fact table from SCD2 snapshot filtering only PASS/PASS-SOFT records
+-- Co-authored with CoCo
+USE DATABASE P360_DQ;
+USE SCHEMA GOLD;
+
+CREATE OR REPLACE PROCEDURE GOLD.SP_LOAD_FCT_PROVIDER_360(
+    P_RUN_ID VARCHAR, P_MODE VARCHAR DEFAULT 'FULL'
+)
+RETURNS VARIANT
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+    v_step_run_id VARCHAR;
+    v_insert_count NUMBER DEFAULT 0;
+    v_err_msg VARCHAR;
+BEGIN
+    v_step_run_id := UUID_STRING();
+    CALL P360_DQ.CONFIG.SP_LOG_STEP_START(:v_step_run_id, :P_RUN_ID, 50, 'LOAD_FCT_PROVIDER_360', 'GOLD', 1);
+
+    TRUNCATE TABLE P360_DQ.GOLD.FCT_PROVIDER_360;
+
+    INSERT INTO P360_DQ.GOLD.FCT_PROVIDER_360 (
+        PROVIDER_SK, PROVIDER_NPI, PROVIDER_NAME, CREDENTIAL, GENDER_DESC,
+        PRIMARY_SPECIALTY, SPECIALTY_CATEGORY, STATE, ZIP_CODE,
+        ADDRESS_LINE_1, CITY, PROVIDER_STATUS, IS_CURRENT, VALID_FROM, VALID_TO, _RUN_ID
+    )
+    SELECT
+        d.PROVIDER_SK,
+        s.PROVIDER_BK,
+        s.PROVIDER_NAME,
+        s.CREDENTIAL,
+        CASE d.GENDER WHEN 'M' THEN 'Male' WHEN 'F' THEN 'Female' ELSE 'Unknown' END,
+        s.PRIMARY_SPECIALTY,
+        d.SPECIALTY_CATEGORY,
+        s.STATE,
+        s.ZIP_CODE,
+        d.ADDRESS_LINE_1,
+        d.CITY,
+        s.PROVIDER_STATUS,
+        s._IS_CURRENT,
+        s._VALID_FROM,
+        s._VALID_TO,
+        :P_RUN_ID
+    FROM P360_DQ.SILVER.SCD2_PROVIDER_ATTRIBUTES s
+    JOIN P360_DQ.SILVER.DIM_PROVIDER d ON s.PROVIDER_BK = d.PROVIDER_BK
+    WHERE d.DQ_STATUS IN ('PASS', 'PASS-SOFT');
+
+    v_insert_count := SQLROWCOUNT;
+    CALL P360_DQ.CONFIG.SP_LOG_STEP_END(:v_step_run_id, 'COMPLETED', :v_insert_count, :v_insert_count, 0, 0, NULL, NULL, NULL);
+    RETURN OBJECT_CONSTRUCT('status', 'COMPLETED', 'rows_written', :v_insert_count);
+EXCEPTION
+    WHEN OTHER THEN
+        LET v_err_msg := SQLERRM;
+        CALL P360_DQ.CONFIG.SP_LOG_ERROR(:P_RUN_ID, :v_step_run_id, 'LOAD_FCT_PROVIDER_360', '', '', :v_err_msg, NULL, 'ERROR');
+        CALL P360_DQ.CONFIG.SP_LOG_STEP_END(:v_step_run_id, 'FAILED', 0, 0, 0, 0, :v_err_msg, '', NULL);
+        RETURN OBJECT_CONSTRUCT('status', 'FAILED', 'error', :v_err_msg);
+END;
+$$;
