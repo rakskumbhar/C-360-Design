@@ -21,6 +21,9 @@ DECLARE
     v_changed_count NUMBER DEFAULT 0;
     v_err_msg VARCHAR;
 BEGIN
+    USE DATABASE P360_DQ;
+    USE SCHEMA SILVER;
+
     v_step_run_id := UUID_STRING();
     CALL P360_DQ.CONFIG.SP_LOG_STEP_START(:v_step_run_id, :P_RUN_ID, 40, 'SCD2_PROVIDER_ATTRIBUTES', 'SILVER', 1);
 

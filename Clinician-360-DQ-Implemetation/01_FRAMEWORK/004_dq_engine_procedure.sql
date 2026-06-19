@@ -140,7 +140,7 @@ BEGIN
 
             -- Token substitution on RULE_EXP
             v_resolved_exp := :v_rule_exp;
-            v_resolved_exp := REPLACE(:v_resolved_exp, '${INPUT1}', :v_dq_rule_input);
+            v_resolved_exp := REPLACE(:v_resolved_exp, '${INPUT1}', 'CAST(' || :v_dq_rule_input || ' AS VARCHAR)');
             v_resolved_exp := REPLACE(:v_resolved_exp, '${INPUT2}', COALESCE(:v_where_col, ''));
             v_resolved_exp := REPLACE(:v_resolved_exp, '${INPUTN}', :v_dq_rule_input);
             v_resolved_exp := REPLACE(:v_resolved_exp, '${TABLE_NAME}', :v_fq_table);
@@ -158,18 +158,21 @@ BEGIN
                     :v_rule_id || ', ' || :v_feed_id || ', ' ||
                     'CAST(' || :v_feed_rec_key || ' AS VARCHAR), ' ||
                     'CAST(' || :v_dq_rule_input || ' AS VARCHAR), ' ||
-                    '''FAIL'', CURRENT_USER() ' ||
+                    '''' || CASE WHEN :v_criticality = 'Y' THEN 'FAIL' ELSE 'PASS-SOFT' END || ''', CURRENT_USER() ' ||
                     'FROM ' || :v_fq_table || ' ' ||
                     'WHERE DQ_STATUS IS NULL AND (' || :v_resolved_exp || ') = ''FAIL''';
 
             ELSEIF (:v_rule_category = 'COMPLEX') THEN
+                -- COMPLEX: Duplicate detection via QUALIFY ROW_NUMBER
                 v_dyn_sql := 'INSERT INTO P360_DQ.AUDIT.DQ_RESULT ' ||
                     '(DQ_BATCH_ID, LAYER, DOMAIN, TABLE_NM, RULE_ID, FEED_ID, RECORD_KEY, RECORD_VALUE, RESULT, RECORD_INS_BY) ' ||
                     'SELECT ''' || :P_DQ_BATCH_ID || ''', ''' || :P_LAYER || ''', ''' || :v_domain || ''', ''' || :P_TABLE_NM || ''', ' ||
                     :v_rule_id || ', ' || :v_feed_id || ', ' ||
                     'CAST(a.' || :v_feed_rec_key || ' AS VARCHAR), ' ||
                     'CAST(a.' || :v_dq_rule_input || ' AS VARCHAR), ' ||
-                    :v_resolved_exp;
+                    '''' || CASE WHEN :v_criticality = 'Y' THEN 'FAIL' ELSE 'PASS-SOFT' END || ''', CURRENT_USER() ' ||
+                    'FROM ' || :v_fq_table || ' a WHERE DQ_STATUS IS NULL QUALIFY ' ||
+                    '(ROW_NUMBER() OVER(PARTITION BY ' || :v_dq_rule_input || ' ORDER BY ' || :v_incr_col || ' DESC)) > 1';
 
             ELSEIF (:v_rule_category = 'SQL_FEED') THEN
                 v_dyn_sql := 'INSERT INTO P360_DQ.AUDIT.DQ_RESULT ' ||
@@ -178,7 +181,7 @@ BEGIN
                     :v_rule_id || ', ' || :v_feed_id || ', ' ||
                     'CAST(' || :v_feed_rec_key || ' AS VARCHAR), ' ||
                     'CAST(' || :v_dq_rule_input || ' AS VARCHAR), ' ||
-                    '''FAIL'', CURRENT_USER() ' ||
+                    '''' || CASE WHEN :v_criticality = 'Y' THEN 'FAIL' ELSE 'PASS-SOFT' END || ''', CURRENT_USER() ' ||
                     'FROM (' || :v_resolved_exp || ') sub ' ||
                     'WHERE sub.RESULT = ''FAIL''';
 
@@ -196,21 +199,20 @@ BEGIN
         END;
     END FOR;
 
-    -- Step 3: Count total failures
-    SELECT COUNT(*) INTO v_fail_count
+    -- Step 3: Count distinct CRITICAL failures (RESULT='FAIL') for threshold check
+    SELECT COUNT(DISTINCT RECORD_KEY) INTO v_fail_count
     FROM P360_DQ.AUDIT.DQ_RESULT
     WHERE DQ_BATCH_ID = :P_DQ_BATCH_ID AND TABLE_NM = :P_TABLE_NM AND RESULT = 'FAIL';
 
     -- Step 4: MERGE DQ_STATUS back to source table
-    -- FAIL = any critical rule failed; PASS-SOFT = only non-critical; PASS = clean
+    -- Uses RESULT from DQ_RESULT directly: worst status wins (FAIL > PASS-SOFT)
     v_dyn_sql := 'MERGE INTO ' || :v_fq_table || ' tgt USING (' ||
-        'SELECT DISTINCT r.RECORD_KEY, ' ||
-        'CASE WHEN SUM(CASE WHEN f.CRITICALITY_IND = ''Y'' THEN 1 ELSE 0 END) > 0 THEN ''FAIL'' ' ||
+        'SELECT RECORD_KEY, ' ||
+        'CASE WHEN MAX(CASE WHEN RESULT = ''FAIL'' THEN 1 ELSE 0 END) > 0 THEN ''FAIL'' ' ||
         'ELSE ''PASS-SOFT'' END AS COMPUTED_STATUS ' ||
-        'FROM P360_DQ.AUDIT.DQ_RESULT r ' ||
-        'JOIN P360_DQ.CONFIG.DQ_FEED f ON r.FEED_ID = f.FEED_ID ' ||
-        'WHERE r.DQ_BATCH_ID = ''' || :P_DQ_BATCH_ID || ''' AND r.TABLE_NM = ''' || :P_TABLE_NM || ''' ' ||
-        'GROUP BY r.RECORD_KEY' ||
+        'FROM P360_DQ.AUDIT.DQ_RESULT ' ||
+        'WHERE DQ_BATCH_ID = ''' || :P_DQ_BATCH_ID || ''' AND TABLE_NM = ''' || :P_TABLE_NM || ''' ' ||
+        'GROUP BY RECORD_KEY' ||
         ') src ON CAST(tgt.' || :v_record_key_nm || ' AS VARCHAR) = src.RECORD_KEY ' ||
         'WHEN MATCHED AND tgt.DQ_STATUS IS NULL THEN UPDATE SET DQ_STATUS = src.COMPUTED_STATUS';
     EXECUTE IMMEDIATE :v_dyn_sql;
