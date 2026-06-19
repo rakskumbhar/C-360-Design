@@ -8,7 +8,7 @@
            dynamically builds SQL from RULE_EXP templates via token substitution.
            No hardcoded rule logic - adding a new rule only requires a config row.
            
-  Design (aligned to reference architecture):
+  Design (reference architecture):
     SP_RUN_DQ_CHECK (= DQ_Run + DQ_Process_Failed_Record combined)
       1. Count source rows where DQ_STATUS IS NULL
       2. For SIMPLE rules: evaluate expression per-row, insert FAILs
