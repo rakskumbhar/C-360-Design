@@ -70,7 +70,6 @@ DECLARE
     v_rule_exp          STRING;
     v_rule_category     STRING;
     v_rule_code         STRING;
-    v_select_sql        STRING;
 BEGIN
     v_dq_start_ts := CURRENT_TIMESTAMP();
 
@@ -153,44 +152,36 @@ BEGIN
             v_resolved_exp := REPLACE(:v_resolved_exp, '${INCREMENTAL_DATE_COLUMN}', 'DQ_STATUS IS NULL');
 
             IF (:v_rule_category = 'SIMPLE') THEN
-                v_select_sql := 'SELECT * FROM ' || :v_fq_table ||
-                    ' WHERE DQ_STATUS IS NULL AND (' || :v_resolved_exp || ') = ''FAIL''';
                 v_dyn_sql := 'INSERT INTO P360_DQ.AUDIT.DQ_RESULT ' ||
-                    '(DQ_BATCH_ID, LAYER, DOMAIN, TABLE_NM, RULE_ID, FEED_ID, RECORD_KEY, RECORD_VALUE, RESULT, RECORD_INS_BY, DQ_CHECK_SQL_DYN) ' ||
+                    '(DQ_BATCH_ID, LAYER, DOMAIN, TABLE_NM, RULE_ID, FEED_ID, RECORD_KEY, RECORD_VALUE, RESULT, RECORD_INS_BY) ' ||
                     'SELECT ''' || :P_DQ_BATCH_ID || ''', ''' || :P_LAYER || ''', ''' || :v_domain || ''', ''' || :P_TABLE_NM || ''', ' ||
                     :v_rule_id || ', ' || :v_feed_id || ', ' ||
                     'CAST(' || :v_feed_rec_key || ' AS VARCHAR), ' ||
                     'CAST(' || :v_dq_rule_input || ' AS VARCHAR), ' ||
-                    '''' || CASE WHEN :v_criticality = 'Y' THEN 'FAIL' ELSE 'PASS-SOFT' END || ''', CURRENT_USER(), ' ||
-                    '''' || REPLACE(:v_select_sql, '''', '''''') || ''' ' ||
+                    '''' || CASE WHEN :v_criticality = 'Y' THEN 'FAIL' ELSE 'PASS-SOFT' END || ''', CURRENT_USER() ' ||
                     'FROM ' || :v_fq_table || ' ' ||
                     'WHERE DQ_STATUS IS NULL AND (' || :v_resolved_exp || ') = ''FAIL''';
 
             ELSEIF (:v_rule_category = 'COMPLEX') THEN
-                v_select_sql := 'SELECT * FROM ' || :v_fq_table ||
-                    ' a WHERE DQ_STATUS IS NULL QUALIFY (ROW_NUMBER() OVER(PARTITION BY ' ||
-                    :v_dq_rule_input || ' ORDER BY ' || :v_incr_col || ' DESC)) > 1';
+                -- COMPLEX: Duplicate detection via QUALIFY ROW_NUMBER
                 v_dyn_sql := 'INSERT INTO P360_DQ.AUDIT.DQ_RESULT ' ||
-                    '(DQ_BATCH_ID, LAYER, DOMAIN, TABLE_NM, RULE_ID, FEED_ID, RECORD_KEY, RECORD_VALUE, RESULT, RECORD_INS_BY, DQ_CHECK_SQL_DYN) ' ||
+                    '(DQ_BATCH_ID, LAYER, DOMAIN, TABLE_NM, RULE_ID, FEED_ID, RECORD_KEY, RECORD_VALUE, RESULT, RECORD_INS_BY) ' ||
                     'SELECT ''' || :P_DQ_BATCH_ID || ''', ''' || :P_LAYER || ''', ''' || :v_domain || ''', ''' || :P_TABLE_NM || ''', ' ||
                     :v_rule_id || ', ' || :v_feed_id || ', ' ||
                     'CAST(a.' || :v_feed_rec_key || ' AS VARCHAR), ' ||
                     'CAST(a.' || :v_dq_rule_input || ' AS VARCHAR), ' ||
-                    '''' || CASE WHEN :v_criticality = 'Y' THEN 'FAIL' ELSE 'PASS-SOFT' END || ''', CURRENT_USER(), ' ||
-                    '''' || REPLACE(:v_select_sql, '''', '''''') || ''' ' ||
+                    '''' || CASE WHEN :v_criticality = 'Y' THEN 'FAIL' ELSE 'PASS-SOFT' END || ''', CURRENT_USER() ' ||
                     'FROM ' || :v_fq_table || ' a WHERE DQ_STATUS IS NULL QUALIFY ' ||
                     '(ROW_NUMBER() OVER(PARTITION BY ' || :v_dq_rule_input || ' ORDER BY ' || :v_incr_col || ' DESC)) > 1';
 
             ELSEIF (:v_rule_category = 'SQL_FEED') THEN
-                v_select_sql := 'SELECT * FROM (' || :v_resolved_exp || ') sub WHERE sub.RESULT = ''FAIL''';
                 v_dyn_sql := 'INSERT INTO P360_DQ.AUDIT.DQ_RESULT ' ||
-                    '(DQ_BATCH_ID, LAYER, DOMAIN, TABLE_NM, RULE_ID, FEED_ID, RECORD_KEY, RECORD_VALUE, RESULT, RECORD_INS_BY, DQ_CHECK_SQL_DYN) ' ||
+                    '(DQ_BATCH_ID, LAYER, DOMAIN, TABLE_NM, RULE_ID, FEED_ID, RECORD_KEY, RECORD_VALUE, RESULT, RECORD_INS_BY) ' ||
                     'SELECT ''' || :P_DQ_BATCH_ID || ''', ''' || :P_LAYER || ''', ''' || :v_domain || ''', ''' || :P_TABLE_NM || ''', ' ||
                     :v_rule_id || ', ' || :v_feed_id || ', ' ||
                     'CAST(' || :v_feed_rec_key || ' AS VARCHAR), ' ||
                     'CAST(' || :v_dq_rule_input || ' AS VARCHAR), ' ||
-                    '''' || CASE WHEN :v_criticality = 'Y' THEN 'FAIL' ELSE 'PASS-SOFT' END || ''', CURRENT_USER(), ' ||
-                    '''' || REPLACE(:v_select_sql, '''', '''''') || ''' ' ||
+                    '''' || CASE WHEN :v_criticality = 'Y' THEN 'FAIL' ELSE 'PASS-SOFT' END || ''', CURRENT_USER() ' ||
                     'FROM (' || :v_resolved_exp || ') sub ' ||
                     'WHERE sub.RESULT = ''FAIL''';
 

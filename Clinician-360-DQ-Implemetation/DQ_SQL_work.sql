@@ -142,9 +142,10 @@ JOIN P360_DQ.CONFIG.DQ_RULE r ON f.RULE_ID = r.RULE_ID
 WHERE f.ACTIVE_IND = 'Y'
 ORDER BY f.LAYER, f.TABLE_NM, f.FEED_ID;
 
+SELECT * FROM P360_DQ.BRONZE.STG_NPI_REGISTRY 
+WHERE  (CASE WHEN TRIM(COALESCE(CAST(NPI_NUMBER AS VARCHAR),''))= '' THEN 'FAIL' ELSE 'PASS' END) = 'FAIL'
 
-
-
+;
 use p360_dq;
 
 select* from audit.PKG_RUN_LOG ;
@@ -212,6 +213,26 @@ SELECT f.FEED_ID, f.RULE_ID, f.DQ_RULE_INPUT, f.RECORD_KEY_NM,
         ;
 
 
+
+
+
+      SELECT f.FEED_ID AS F_FEED_ID, f.RULE_ID AS F_RULE_ID,
+               f.DQ_RULE_INPUT AS F_DQ_RULE_INPUT, f.RECORD_KEY_NM AS F_RECORD_KEY_NM,
+               f.INCREMENTAL_DATE_COLUMN AS F_INCR_COL, f.CRITICALITY_IND AS F_CRIT,
+               f.DOMAIN AS F_DOMAIN,
+               f.DQ_RULE_INPUT_JOIN_TBL AS F_JOIN_TBL,
+               f.DQ_RULE_INPUT_JOIN_COL AS F_JOIN_COL,
+               f.DQ_RULE_INPUT_WHERE_COL AS F_WHERE_COL,
+               r.RULE_EXP AS R_RULE_EXP, r.RULE_CATEGORY AS R_RULE_CATEGORY,
+               r.RULE_CODE AS R_RULE_CODE
+        FROM P360_DQ.CONFIG.DQ_FEED f
+        JOIN P360_DQ.CONFIG.DQ_RULE r ON f.RULE_ID = r.RULE_ID
+        WHERE f.TABLE_NM = 'STG_NPI_REGISTRY'
+          AND f.LAYER = 'BRONZE'
+          AND f.ACTIVE_IND = 'Y'
+        ORDER BY f.FEED_ID
+
+;
         CASE WHEN (ROW_NUMBER() OVER(PARTITION BY PROVIDERID ORDER BY 1))>1 THEN 'FAIL' ELSE 'PASS' END AS RESULT FROM PROVIDER a WHERE ${INCREMENTAL_DATE_COLUMN} QUALIFY RESULT = 'FAIL'
 
         --AFTER EXECUTION, DQ_STATUS COLUMNS IN BRONZE TABLES LIKE STG_NPI_REGISTRY NOT UPDATED, ALSO IN SILVER LAYER TABLE DIM_PROVIDER IS NOT EVEN POPULATED WITH ANY DATA.
@@ -231,4 +252,12 @@ CALL P360_DQ.ORCHESTRATION.SP_RUN_PACKAGE('FULL');
 
 I see audit.DQ_LOG tables has some errors in error_message columns and also its logging against bornze and silver layer against 2 domain values- Providers and null, and hence silver dim_provider tables overall_count = 12 hpwever it mentions failed_count as 37 which is not possible. this behavior seen in table audit.DQ_LOG. due to this silver table is failing as it exceeding 90.00 of set DQ threshold. could you please check on this and fix this.
 
-before running this I also observer audit.DQ_RESULT tables has result column with all records populated as 'FAIL' however I am expecting FAIL, PASS-SOFT and PASS values over there. could you please check and fix this
+before running this I also observer audit.DQ_RESULT tables has result column with all records populated as 'FAIL' however I am expecting FAIL, PASS-SOFT and PASS values over there. could you please check and fix this;
+
+
+;
+   SELECT RECORD_KEY_NM 
+   
+    FROM P360_DQ.CONFIG.DQ_FEED
+    WHERE TABLE_NM = 'STG_NPI_REGISTRY' AND LAYER = 'BRONZE' AND ACTIVE_IND = 'Y'
+    LIMIT 1;
