@@ -93,7 +93,10 @@ INSERT INTO DQ_RULE (CATEGORY_ID, RULE_CODE, RULE_DESC, RULE_EXP, RULE_CATEGORY)
  'SIMPLE'),
 (7, 'GN_RefIntegrity', 'Referential integrity cross-table check',
  '''FAIL'' AS RESULT FROM ${JOINTBL1} a LEFT JOIN ${JOINTBL2} b ON a.${JOINCOL1} = b.${JOINCOL2} WHERE ${INCREMENTAL_DATE_COLUMN} AND b.${WHERECOL1} IS NULL',
- 'COMPLEX');
+ 'COMPLEX'),
+(6, 'GN_InList', 'Validate value is in allowed list',
+ 'CASE WHEN ${INPUT1} NOT IN (${INPUT2}) THEN ''FAIL'' ELSE ''PASS'' END',
+ 'SIMPLE');
 
 -- ============================================================
 -- DQ_FEED (Bronze Layer)
@@ -126,6 +129,15 @@ INSERT INTO DQ_FEED (LAYER, DOMAIN, RULE_ID, TABLE_NM, RECORD_KEY_NM, INCREMENTA
 ('SILVER', 'PROVIDERS', 5, 'DIM_PROVIDER', 'PROVIDER_SK', 'LOAD_DT', 'PROVIDER_TIN', 'Y', 'Y', 'GROUP_A'),
 ('SILVER', 'PROVIDERS', 7, 'DIM_PROVIDER', 'PROVIDER_SK', 'LOAD_DT', 'PROVIDER_TIN', 'Y', 'Y', 'GROUP_A'),
 ('SILVER', 'PROVIDERS', 1, 'DIM_PROVIDER', 'PROVIDER_SK', 'LOAD_DT', 'PROVIDER_NPI', 'Y', 'Y', 'GROUP_A');
+
+-- ============================================================
+-- DQ_FEED (GN_InList rules - Bronze & Silver)
+-- ============================================================
+INSERT INTO DQ_FEED (LAYER, DOMAIN, RULE_ID, TABLE_NM, RECORD_KEY_NM, INCREMENTAL_DATE_COLUMN, DQ_RULE_INPUT, DQ_RULE_INPUT_WHERE_COL, CRITICALITY_IND, ACTIVE_IND, EXECUTION_GROUP) VALUES
+('BRONZE', 'PROVIDERS', (SELECT RULE_ID FROM DQ_RULE WHERE RULE_CODE='GN_InList'), 'STG_NPI_REGISTRY', 'NPI_SK', 'LOAD_DT', 'CREDENTIAL', '''MD'',''DO'',''NP'',''PA'',''RN'',''APRN'',''DPM'',''DDS'',''PhD'',''PharmD'',''OD'',''DC''', 'Y', 'Y', 'GROUP_A'),
+('SILVER', 'PROVIDERS', (SELECT RULE_ID FROM DQ_RULE WHERE RULE_CODE='GN_InList'), 'DIM_PROVIDER', 'PROVIDER_SK', 'LOAD_DT', 'CREDENTIAL', '''MD'',''DO'',''NP'',''PA'',''RN'',''APRN'',''DPM'',''DDS'',''PhD'',''PharmD'',''OD'',''DC''', 'Y', 'Y', 'GROUP_A'),
+('SILVER', 'PROVIDERS', 2, 'DIM_PROVIDER', 'PROVIDER_SK', 'LOAD_DT', 'PHONE', 'N', 'Y', 'GROUP_A'),
+('SILVER', 'PROVIDERS', (SELECT RULE_ID FROM DQ_RULE WHERE RULE_CODE='GN_InList'), 'DIM_PROVIDER', 'PROVIDER_SK', 'LOAD_DT', 'GENDER', '''M'',''F''', 'N', 'Y', 'GROUP_A');
 
 -- ============================================================
 -- DQ_EMAIL (Notification recipients by domain)

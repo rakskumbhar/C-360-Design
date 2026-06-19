@@ -189,6 +189,9 @@ CREATE OR REPLACE TABLE DQ_RULE (
 | 8 | 1 | GN_UpperCase | Check field is in upper case | SIMPLE |
 | 9 | 5 | GN_Timeliness | Validate data not stale | SIMPLE |
 | 10 | 7 | GN_RefIntegrity | Referential integrity cross-table | COMPLEX |
+| 101 | 6 | GN_InList | Validate value is in allowed list | SIMPLE |
+
+**GN_InList Usage:** Set `DQ_RULE_INPUT` = column name, `DQ_RULE_INPUT_WHERE_COL` = comma-separated quoted values (e.g. `'MD','DO','NP','PA','RN'`)
 
 ### 6.4 DQ_FEED
 
@@ -356,53 +359,85 @@ Key-value store for runtime parameters — inherited from reference framework.
 
 ## 10. DQ Engine Procedure Design (SP_RUN_DQ_CHECK)
 
+### Architecture (Token-Substitution Pattern)
+
+The DQ engine uses **dynamic SQL built from RULE_EXP templates** via token substitution.
+No hardcoded rule logic exists in the procedure — adding a new rule only requires inserting
+rows into `DQ_RULE` and `DQ_FEED`. This aligns with the reference architecture pattern:
+`Master_DQ_Run → DQ_Run → DQ_Process_Failed_Record`.
+
 ### Process Flow
 
 ```
-1. SP reads DQ_FEED for given TABLE_NM + LAYER (ACTIVE_IND = 'Y')
-2. Joins with DQ_RULE & DQ_CATEGORY tables
-3. DQ checks performed based on logic in DQ_RULE.RULE_EXP
-4. Failed records → DQ_STATUS updated as 'FAIL' on source table
-5. Passed records → DQ_STATUS updated as 'PASS'
-6. Non-critical fails → DQ_STATUS updated as 'PASS-SOFT'
-7. Results inserted in DQ_RESULT table
-8. Execution logged in DQ_LOG + DQ_LOG_HISTORY
-9. Email notifications sent with details of failed records
+1. Count source rows WHERE DQ_STATUS IS NULL (new/unprocessed records)
+2. For each active feed (DQ_FEED + DQ_RULE join):
+   a. Perform TOKEN SUBSTITUTION on DQ_RULE.RULE_EXP
+   b. Build INSERT-SELECT based on RULE_CATEGORY (SIMPLE/COMPLEX/SQL_FEED)
+   c. Execute dynamic SQL → failures inserted into DQ_RESULT
+3. MERGE DQ_STATUS back to source table:
+   - FAIL = any critical rule (CRITICALITY_IND='Y') failed
+   - PASS-SOFT = only non-critical rules failed
+   - PASS = no failures
+4. Log to DQ_LOG + DQ_LOG_HISTORY
+5. Check DQ threshold → if exceeded, return THRESHOLD_EXCEEDED
 ```
 
 ### Procedure Signature
 
+```sql
+CONFIG.SP_RUN_DQ_CHECK(P_RUN_ID VARCHAR, P_TABLE_NM VARCHAR, P_LAYER VARCHAR, P_DQ_BATCH_ID VARCHAR)
 ```
-SP_RUN_DQ_CHECK(P_RUN_ID VARCHAR, P_TABLE_NM VARCHAR, P_LAYER VARCHAR, P_DQ_BATCH_ID VARCHAR)
+
+### Token Reference
+
+Tokens in `DQ_RULE.RULE_EXP` are replaced at runtime with values from `DQ_FEED`:
+
+| Token | Resolved From | Purpose |
+|-------|---------------|---------|
+| `${INPUT1}` | DQ_FEED.DQ_RULE_INPUT | Column name to validate |
+| `${INPUT2}` | DQ_FEED.DQ_RULE_INPUT_WHERE_COL | Allowed values list / parameter |
+| `${INPUTN}` | DQ_FEED.DQ_RULE_INPUT | Partition column (for duplicates) |
+| `${TABLE_NAME}` | P360_DQ.\<schema\>.\<table\> | Fully qualified source table |
+| `${JOINTBL1}` | P360_DQ.\<schema\>.\<table\> | Source table for joins |
+| `${JOINTBL2}` | DQ_FEED.DQ_RULE_INPUT_JOIN_TBL | Reference/lookup table |
+| `${JOINCOL1}` | DQ_FEED.DQ_RULE_INPUT | Source join column |
+| `${JOINCOL2}` | DQ_FEED.DQ_RULE_INPUT_JOIN_COL | Reference join column |
+| `${WHERECOL1}` | DQ_FEED.DQ_RULE_INPUT_WHERE_COL | Filter column on ref table |
+| `${INCREMENTAL_DATE_COLUMN}` | (hardcoded) | `DQ_STATUS IS NULL` |
+
+### Rule Category Handling
+
+| Category | SQL Pattern | Example |
+|----------|-------------|---------|
+| **SIMPLE** | `SELECT ... FROM table WHERE DQ_STATUS IS NULL AND (resolved_exp) = 'FAIL'` | NotNull, Length, InList, UpperCase |
+| **COMPLEX** | `SELECT ... resolved_exp` (expression includes FROM/WHERE/QUALIFY) | Duplicate, Lookup, RefIntegrity |
+| **SQL_FEED** | `SELECT ... FROM (resolved_exp) sub WHERE sub.RESULT = 'FAIL'` | Custom SQL-based checks |
+
+### DQ_STATUS Update Logic (MERGE)
+
+```sql
+-- Step 4: MERGE back to source
+MERGE INTO <source_table> tgt
+USING (
+    SELECT RECORD_KEY,
+        CASE WHEN SUM(CASE WHEN f.CRITICALITY_IND='Y' THEN 1 ELSE 0 END) > 0 THEN 'FAIL'
+        ELSE 'PASS-SOFT' END AS COMPUTED_STATUS
+    FROM DQ_RESULT r JOIN DQ_FEED f ON r.FEED_ID = f.FEED_ID
+    WHERE r.DQ_BATCH_ID = :batch AND r.TABLE_NM = :table
+    GROUP BY RECORD_KEY
+) src ON CAST(tgt.<key> AS VARCHAR) = src.RECORD_KEY
+WHEN MATCHED AND tgt.DQ_STATUS IS NULL THEN UPDATE SET DQ_STATUS = src.COMPUTED_STATUS;
+
+-- Remaining NULLs = PASS (no failures)
+UPDATE <source_table> SET DQ_STATUS = 'PASS' WHERE DQ_STATUS IS NULL;
 ```
 
-### Logic
+### Adding a New Rule (Zero Code Changes)
 
 ```
-1. INITIALIZE
-   - Read DQ_LOG for last dq_end_ts (incremental window)
-   - Set dq_start_ts = last dq_end_ts; dq_end_ts = CURRENT_TIMESTAMP
-
-2. FETCH FEEDS
-   - SELECT from DQ_FEED WHERE TABLE_NM AND LAYER AND ACTIVE_IND = 'Y'
-   - JOIN DQ_RULE + DQ_CATEGORY
-
-3. FOR EACH FEED:
-   a. Read RULE_CATEGORY (SIMPLE/MULTIPLE/COMPLEX/SQL FEED)
-   b. BUILD DYNAMIC SQL replacing ${INPUT1}, ${TABLE_NAME}, etc.
-   c. APPLY FILTER: WHERE DQ_STATUS IS NULL (new/changed records)
-   d. EXECUTE and capture results
-   e. INSERT failed records into DQ_RESULT
-   f. DETERMINE DQ_STATUS:
-      CRITICALITY_IND='Y' + FAIL → 'FAIL'
-      CRITICALITY_IND='N' + FAIL → 'PASS-SOFT'
-      PASS → 'PASS'
-
-4. AGGREGATE per record (worst wins: FAIL > PASS-SOFT > PASS)
-5. UPDATE source table SET DQ_STATUS
-6. LOG to DQ_LOG + DQ_LOG_HISTORY
-7. CHECK THRESHOLD → if exceeded, notify + return FAILED
-8. RETURN result object
+1. INSERT into DQ_RULE (RULE_CODE, RULE_EXP, RULE_CATEGORY)
+2. INSERT into DQ_FEED (LAYER, TABLE_NM, RULE_ID, DQ_RULE_INPUT, CRITICALITY_IND, ACTIVE_IND)
+3. The existing SP_RUN_DQ_CHECK engine handles it automatically
 ```
 
 ---
