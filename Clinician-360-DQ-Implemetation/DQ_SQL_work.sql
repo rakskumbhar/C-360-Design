@@ -175,7 +175,7 @@ select* from P360_DQ.CONFIG.PKG_STEP_REGISTRY;
 
 
 select* from P360_DQ.BRONZE.STG_NPI_REGISTRY;
-select* from P360_DQ.BRONZE.STG_SPECIALTY_TYPE
+select* from P360_DQ.BRONZE.STG_SPECIALTY_TYPE;
 
 CALL P360_DQ.ORCHESTRATION.SP_RUN_PACKAGE('FULL');
 
@@ -186,7 +186,9 @@ select* from P360_DQ.SILVER.SCD2_PROVIDER_ATTRIBUTES;
 select* from P360_DQ.GOLD.FCT_PROVIDER_360
 
 ;
+select* from P360_DQ.CONFIG.ENV_CONFIG
 
+;
 update P360_DQ.CONFIG.ENV_CONFIG
 set dq_reject_threshold='90.00'
 where environment='DEV'
@@ -261,3 +263,27 @@ before running this I also observer audit.DQ_RESULT tables has result column wit
     FROM P360_DQ.CONFIG.DQ_FEED
     WHERE TABLE_NM = 'STG_NPI_REGISTRY' AND LAYER = 'BRONZE' AND ACTIVE_IND = 'Y'
     LIMIT 1;
+
+
+
+    select* from P360_DQ.BRONZE.STG_NPI_REGISTRY
+    where npi_number ='1111111111'
+    ;
+
+select* from audit.dq_result
+where record_key=943
+;
+
+select * from config.dq_feed
+where feed_id in (1,2)
+
+;
+select* from config.dq_rule
+where rule_id=2
+
+;
+    
+select* from P360_DQ.BRONZE.STG_SPECIALTY_TYPE;
+
+select* from P360_DQ.RAW_INGESTION.RAW_NPI_REGISTRY;
+select* from P360_DQ.RAW_INGESTION.raw_specialty_type;
