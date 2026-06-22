@@ -3,93 +3,6 @@
 
 USE DATABASE P360_DQ;
 
-/*=============================================================================
-  FIX 1: Add new DQ rules - GN_InList for specific value validation
-         and GN_Duplicate handling in the engine
-=============================================================================*/
-
--- Add GN_InList rule (validates column value is in a specified list)
-INSERT INTO CONFIG.DQ_RULE (CATEGORY_ID, RULE_CODE, RULE_DESC, RULE_EXP, RULE_CATEGORY)
-SELECT 6, 'GN_InList', 'Validate value is in allowed list',
-       'CASE WHEN ${INPUT1} NOT IN (${INPUT2}) THEN ''FAIL'' ELSE ''PASS'' END',
-       'SIMPLE'
-WHERE NOT EXISTS (SELECT 1 FROM CONFIG.DQ_RULE WHERE RULE_CODE = 'GN_InList');
-
--- Capture the new RULE_ID for GN_InList
-SET v_inlist_rule_id = (SELECT RULE_ID FROM CONFIG.DQ_RULE WHERE RULE_CODE = 'GN_InList');
-
-/*=============================================================================
-  FIX 2: Add Bronze DQ_FEED entry for CREDENTIAL validation using GN_InList
-=============================================================================*/
-
-INSERT INTO CONFIG.DQ_FEED (LAYER, DOMAIN, RULE_ID, TABLE_NM, RECORD_KEY_NM,
-    INCREMENTAL_DATE_COLUMN, DQ_RULE_INPUT, DQ_RULE_INPUT_WHERE_COL,
-    CRITICALITY_IND, ACTIVE_IND, EXECUTION_GROUP)
-SELECT 'BRONZE', 'PROVIDERS', $v_inlist_rule_id, 'STG_NPI_REGISTRY', 'NPI_SK',
-       'LOAD_DT', 'CREDENTIAL', '''MD'',''DO'',''NP'',''PA'',''RN'',''APRN'',''DPM'',''DDS'',''PhD'',''PharmD'',''OD'',''DC''',
-       'Y', 'Y', 'GROUP_A'
-WHERE NOT EXISTS (
-    SELECT 1 FROM CONFIG.DQ_FEED
-    WHERE TABLE_NM = 'STG_NPI_REGISTRY' AND DQ_RULE_INPUT = 'CREDENTIAL'
-      AND LAYER = 'BRONZE'
-);
-
-/*=============================================================================
-  FIX 3: Add richer Silver layer DQ rules
-         - Credential validation (specific values)
-         - Gender validation
-         - Phone format
-         - Deduplication check on PROVIDER_NPI
-=============================================================================*/
-
--- Credential must be in valid list (Silver)
-INSERT INTO CONFIG.DQ_FEED (LAYER, DOMAIN, RULE_ID, TABLE_NM, RECORD_KEY_NM,
-    INCREMENTAL_DATE_COLUMN, DQ_RULE_INPUT, DQ_RULE_INPUT_WHERE_COL,
-    CRITICALITY_IND, ACTIVE_IND, EXECUTION_GROUP)
-SELECT 'SILVER', 'PROVIDERS', $v_inlist_rule_id, 'DIM_PROVIDER', 'PROVIDER_SK',
-       'LOAD_DT', 'CREDENTIAL', '''MD'',''DO'',''NP'',''PA'',''RN'',''APRN'',''DPM'',''DDS'',''PhD'',''PharmD'',''OD'',''DC''',
-       'Y', 'Y', 'GROUP_A'
-WHERE NOT EXISTS (
-    SELECT 1 FROM CONFIG.DQ_FEED
-    WHERE TABLE_NM = 'DIM_PROVIDER' AND DQ_RULE_INPUT = 'CREDENTIAL'
-      AND LAYER = 'SILVER'
-);
-
--- Gender must be M or F (Silver)
-INSERT INTO CONFIG.DQ_FEED (LAYER, DOMAIN, RULE_ID, TABLE_NM, RECORD_KEY_NM,
-    INCREMENTAL_DATE_COLUMN, DQ_RULE_INPUT, DQ_RULE_INPUT_WHERE_COL,
-    CRITICALITY_IND, ACTIVE_IND, EXECUTION_GROUP)
-SELECT 'SILVER', 'PROVIDERS', $v_inlist_rule_id, 'DIM_PROVIDER', 'PROVIDER_SK',
-       'LOAD_DT', 'GENDER', '''M'',''F''',
-       'N', 'Y', 'GROUP_A'
-WHERE NOT EXISTS (
-    SELECT 1 FROM CONFIG.DQ_FEED
-    WHERE TABLE_NM = 'DIM_PROVIDER' AND DQ_RULE_INPUT = 'GENDER'
-      AND LAYER = 'SILVER'
-);
-
--- Provider NPI must not be duplicate (Silver)
-INSERT INTO CONFIG.DQ_FEED (LAYER, DOMAIN, RULE_ID, TABLE_NM, RECORD_KEY_NM,
-    INCREMENTAL_DATE_COLUMN, DQ_RULE_INPUT, CRITICALITY_IND, ACTIVE_IND, EXECUTION_GROUP)
-SELECT 'SILVER', 'PROVIDERS', 1, 'DIM_PROVIDER', 'PROVIDER_SK',
-       'LOAD_DT', 'PROVIDER_NPI', 'Y', 'Y', 'GROUP_A'
-WHERE NOT EXISTS (
-    SELECT 1 FROM CONFIG.DQ_FEED
-    WHERE TABLE_NM = 'DIM_PROVIDER' AND RULE_ID = 1
-      AND LAYER = 'SILVER' AND DQ_RULE_INPUT = 'PROVIDER_NPI'
-);
-
--- Provider phone not null (Silver - non-critical)
-INSERT INTO CONFIG.DQ_FEED (LAYER, DOMAIN, RULE_ID, TABLE_NM, RECORD_KEY_NM,
-    INCREMENTAL_DATE_COLUMN, DQ_RULE_INPUT, CRITICALITY_IND, ACTIVE_IND, EXECUTION_GROUP)
-SELECT 'SILVER', 'PROVIDERS', 2, 'DIM_PROVIDER', 'PROVIDER_SK',
-       'LOAD_DT', 'PHONE', 'N', 'Y', 'GROUP_A'
-WHERE NOT EXISTS (
-    SELECT 1 FROM CONFIG.DQ_FEED
-    WHERE TABLE_NM = 'DIM_PROVIDER' AND RULE_ID = 2 AND DQ_RULE_INPUT = 'PHONE'
-      AND LAYER = 'SILVER'
-);
-
 
 --Reset
 
@@ -105,6 +18,11 @@ truncate table audit.DQ_RESULT ;
 
 truncate table reject.REJECT_RECORDS;
 truncate table reject.REJECT_SUMMARY ;
+
+truncate table P360_DQ.BRONZE.STG_NPI_REGISTRY;
+truncate table P360_DQ.BRONZE.STG_SPECIALTY_TYPE;
+
+
 
 
 
@@ -163,10 +81,17 @@ select* from reject.REJECT_SUMMARY ;
 
 
 select* from P360_DQ.CONFIG.DQ_CATEGORY;
-select* from P360_DQ.CONFIG.DQ_EMAIL;
-select* from P360_DQ.CONFIG.DQ_FEED;
 select* from P360_DQ.CONFIG.DQ_RULE;
-select* from P360_DQ.CONFIG.DQ_log;
+select* from P360_DQ.CONFIG.DQ_FEED;
+select* from audit.DQ_LOG;
+select* from audit.DQ_RESULT ;
+
+--select* from audit.DQ_LOG_HISTORY;
+
+--select* from P360_DQ.CONFIG.DQ_EMAIL;
+
+
+
 
 select* from P360_DQ.CONFIG.ENV_CONFIG;
 select* from P360_DQ.CONFIG.NOTIFICATION_CONFIG;
@@ -174,15 +99,31 @@ select* from P360_DQ.CONFIG.PKG_CONFIG;
 select* from P360_DQ.CONFIG.PKG_STEP_REGISTRY;
 
 
-select* from P360_DQ.BRONZE.STG_NPI_REGISTRY;
+--RAW
+select* from P360_DQ.RAW_INGESTION.RAW_NPI_REGISTRY;
+select* from P360_DQ.RAW_INGESTION.RAW_SPECIALTY_TYPE;
+
+--Bronze
+select* from P360_DQ.BRONZE.STG_NPI_REGISTRY
+where npi_number= 12345
+;
+
+
+select* from audit.DQ_RESULT 
+where record_key=12
+;
+
 select* from P360_DQ.BRONZE.STG_SPECIALTY_TYPE;
+
+
 
 CALL P360_DQ.ORCHESTRATION.SP_RUN_PACKAGE('FULL');
 
-select* from P360_DQ.BRONZE.STG_NPI_REGISTRY;
-select* from P360_DQ.BRONZE.STG_SPECIALTY_TYPE;
+--silver
 select* from P360_DQ.SILVER.DIM_PROVIDER;
 select* from P360_DQ.SILVER.SCD2_PROVIDER_ATTRIBUTES;
+
+--gold
 select* from P360_DQ.GOLD.FCT_PROVIDER_360
 
 ;
@@ -287,3 +228,72 @@ select* from P360_DQ.BRONZE.STG_SPECIALTY_TYPE;
 
 select* from P360_DQ.RAW_INGESTION.RAW_NPI_REGISTRY;
 select* from P360_DQ.RAW_INGESTION.raw_specialty_type;
+
+
+
+-- Reset DQ_STATUS so engine can re-evaluate all records
+UPDATE P360_DQ.BRONZE.STG_NPI_REGISTRY SET DQ_STATUS = NULL;
+UPDATE P360_DQ.BRONZE.STG_SPECIALTY_TYPE SET DQ_STATUS = NULL;
+TRUNCATE TABLE P360_DQ.AUDIT.DQ_RESULT;
+TRUNCATE TABLE P360_DQ.AUDIT.DQ_LOG;
+
+CALL P360_DQ.ORCHESTRATION.SP_RUN_PACKAGE('FULL');
+
+
+
+-- Check DQ_STATUS populated in Bronze
+SELECT DQ_STATUS, COUNT(*) AS cnt FROM P360_DQ.BRONZE.STG_NPI_REGISTRY GROUP BY DQ_STATUS;
+
+SELECT DQ_STATUS, COUNT(*) AS cnt FROM P360_DQ.BRONZE.STG_SPECIALTY_TYPE GROUP BY DQ_STATUS;
+
+
+-- Check DQ_RESULT has entries
+SELECT TABLE_NM, RULE_ID, RESULT, COUNT(*) AS cnt
+FROM P360_DQ.AUDIT.DQ_RESULT
+GROUP BY TABLE_NM, RULE_ID, RESULT
+ORDER BY TABLE_NM, RULE_ID;
+
+-- Check step log for most recent run
+SELECT STEP_NAME, STEP_STATUS, ROWS_READ, ROWS_WRITTEN, ERROR_CODE
+FROM P360_DQ.AUDIT.STEP_RUN_LOG
+WHERE RUN_ID = (SELECT MAX(RUN_ID) FROM P360_DQ.AUDIT.PKG_RUN_LOG)
+ORDER BY START_TIMESTAMP;
+
+-- Manually call Silver load to verify it picks up PASS records
+TRUNCATE TABLE P360_DQ.SILVER.DIM_PROVIDER;
+CALL P360_DQ.SILVER.SP_LOAD_DIM_PROVIDER('manual-test', 'FULL');
+
+-- Check Silver DIM_PROVIDER is populated
+SELECT COUNT(*) AS dim_provider_count FROM P360_DQ.SILVER.DIM_PROVIDER;
+
+SELECT * FROM P360_DQ.SILVER.DIM_PROVIDER LIMIT 10;
+
+-- Full DQ rules configuration
+SELECT f.FEED_ID, f.LAYER, f.TABLE_NM, f.DQ_RULE_INPUT, f.DQ_RULE_INPUT_WHERE_COL, r.RULE_CODE, f.CRITICALITY_IND
+FROM P360_DQ.CONFIG.DQ_FEED f
+JOIN P360_DQ.CONFIG.DQ_RULE r ON f.RULE_ID = r.RULE_ID
+WHERE f.ACTIVE_IND = 'Y'
+ORDER BY f.LAYER, f.TABLE_NM, f.FEED_ID
+
+
+
+-- Debug: Check DQ_LOG for any entries from the engine
+SELECT * FROM P360_DQ.AUDIT.DQ_LOG ORDER BY DQ_START_TS DESC LIMIT 20;
+
+
+SELECT 'STG_NPI_REGISTRY' AS TBL, DQ_STATUS, COUNT(*) AS CNT FROM P360_DQ.BRONZE.STG_NPI_REGISTRY GROUP BY DQ_STATUS
+UNION ALL
+SELECT 'STG_SPECIALTY_TYPE', DQ_STATUS, COUNT(*) FROM P360_DQ.BRONZE.STG_SPECIALTY_TYPE GROUP BY DQ_STATUS
+ORDER BY TBL, DQ_STATUS;
+
+
+SELECT NPI_NUMBER, PROVIDER_NAME, DQ_STATUS
+FROM P360_DQ.BRONZE.STG_NPI_REGISTRY
+WHERE DQ_STATUS IN ('PASS', 'PASS-SOFT')
+LIMIT 15;
+
+
+SELECT STEP_NAME, STEP_STATUS, ROWS_READ, ROWS_WRITTEN, ERROR_CODE
+FROM P360_DQ.AUDIT.STEP_RUN_LOG
+WHERE RUN_ID = (SELECT MAX(RUN_ID) FROM P360_DQ.AUDIT.PKG_RUN_LOG)
+ORDER BY START_TIMESTAMP;
