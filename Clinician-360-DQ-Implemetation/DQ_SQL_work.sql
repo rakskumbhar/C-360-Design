@@ -83,27 +83,12 @@ select* from reject.REJECT_SUMMARY ;
 select* from P360_DQ.CONFIG.DQ_CATEGORY;
 select* from P360_DQ.CONFIG.DQ_RULE;
 select* from P360_DQ.CONFIG.DQ_FEED;
-select* from P360_DQ.CONFIG.DQ_log;
-select* from P360_DQ.CONFIG.DQ_EMAIL;
+select* from audit.DQ_LOG;
+select* from audit.DQ_RESULT ;
 
+--select* from audit.DQ_LOG_HISTORY;
 
-
-update P360_DQ.CONFIG.DQ_CATEGORY
-set record_ins_ts='2026-06-17 21:50:44.717'
-
-;
-
-
-update P360_DQ.CONFIG.DQ_RULE
-set record_ins_ts='2026-06-17 21:50:51.376'
-
-;
-
-update P360_DQ.CONFIG.DQ_FEED
-set record_ins_ts='2026-06-17 21:51:03.570'
-
-;
-
+--select* from P360_DQ.CONFIG.DQ_EMAIL;
 
 
 
@@ -119,7 +104,15 @@ select* from P360_DQ.RAW_INGESTION.RAW_NPI_REGISTRY;
 select* from P360_DQ.RAW_INGESTION.RAW_SPECIALTY_TYPE;
 
 --Bronze
-select* from P360_DQ.BRONZE.STG_NPI_REGISTRY;
+select* from P360_DQ.BRONZE.STG_NPI_REGISTRY
+where npi_number= 12345
+;
+
+
+select* from audit.DQ_RESULT 
+where record_key=12
+;
+
 select* from P360_DQ.BRONZE.STG_SPECIALTY_TYPE;
 
 
